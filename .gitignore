@@ -1,0 +1,32 @@
+# Archive & scratch directories
+_archive/
+.gemini/
+
+# Build artifacts & binaries
+*.bin
+*.elf
+*.map
+*.hex
+build/
+
+# Backups & archives
+*.bak
+*.zip
+*.tar.gz
+
+# Local environment / secrets
+.env
+*.secret
+credentials.h
+**/credentials.h
+secrets.h
+**/secrets.h
+*_Slotted/
+node_configs.json
+edge_monitor_state.json
+
+# OS / Editor files
+.DS_Store
+Thumbs.db
+.vscode/
+~$*

@@ -1,0 +1,49 @@
+{
+  "schema": "ecowan-codegen-core-contract-v1",
+  "version": "2.4-core-first",
+  "mandatory": [
+    "sx1262_init",
+    "radio_settle_delay_5000ms",
+    "otaa_join",
+    "nonce_persistence",
+    "session_persistence",
+    "wlan_ap_bin_ota",
+    "device_time_sync",
+    "utc_slot_scheduler_immediate_tx",
+    "emf1_encoder",
+    "explicit_fport_10"
+  ],
+  "user_configurable": [
+    "node_name",
+    "ota_ap_ssid",
+    "ota_ap_password",
+    "join_eui",
+    "dev_eui",
+    "nwk_key",
+    "app_key",
+    "report_interval_seconds",
+    "utc_slot_second",
+    "firmware_profile",
+    "sensors"
+  ],
+  "board_profiles": {
+    "esp32_lorawan": {
+      "mcu": "ESP32",
+      "fqbn": "esp32:esp32:esp32",
+      "radio": "SX1262",
+      "region": "AS923",
+      "pins": { "nss": 5, "dio1": 33, "rst": 27, "busy": 26, "sck": 18, "miso": 19, "mosi": 23 },
+      "reserved_pins": [5, 18, 19, 23, 26, 27, 33],
+      "input_only_pins": [34, 35, 36, 39],
+      "wifi_safe_adc1_pins": [32, 34, 35, 36, 39]
+    }
+  },
+  "sensor_layer": "modular_extension_hook",
+  "status": "compiled_and_unit_tested_not_flashed_by_codegen",
+  "emf1_core_health": {
+    "field_id": "0x10",
+    "type_code": "0x31",
+    "value": "core_uptime_s",
+    "fport": 10
+  }
+}
