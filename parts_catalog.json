@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "catalogVersion": "0.1.0",
-  "source": "User supplied Part_List.docx plus current demo-node hardware already described in this project.",
+  "source": "Part catalog for ECOWAN environmental monitoring nodes.",
   "protocols": [
     {
       "id": "gpio",
@@ -91,7 +91,7 @@
       "protocols": [
         "gpio"
       ],
-      "description": "Current demo hardware; one-wire style digital signal via DHT library.",
+      "description": "Digital 1-wire temperature and relative humidity sensor via DHT library.",
       "fields": [
         {
           "key": "temperature",
@@ -109,7 +109,7 @@
       "wizardSelectable": true,
       "quantity": 1,
       "notes": [
-        "Uses the existing demo pin GPIO4 unless reconfigured."
+        "Default digital 1-wire pin is GPIO4 unless reconfigured."
       ],
       "boilerplate": {}
     },
@@ -120,7 +120,7 @@
       "protocols": [
         "analog"
       ],
-      "description": "Current demo hardware; analog voltage output.",
+      "description": "Analog soil moisture resistance probe.",
       "fields": [
         {
           "key": "moisture",
@@ -133,7 +133,7 @@
       "wizardSelectable": true,
       "quantity": 1,
       "notes": [
-        "Current demo uses GPIO34; raw ADC is not a calibrated moisture percentage."
+        "Reads raw ADC counts on an analog input pin (calibration needed for percentage moisture)."
       ],
       "boilerplate": {}
     },
