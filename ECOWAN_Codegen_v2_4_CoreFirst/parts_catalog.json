@@ -931,7 +931,7 @@
     "gpio": [
       {
         "id": "GPIO4",
-        "label": "GPIO4 (current demo DHT11 pin; occupied unless replacing it)"
+        "label": "GPIO4"
       },
       {
         "id": "GPIO13",
@@ -969,7 +969,7 @@
     "analog": [
       {
         "id": "GPIO34",
-        "label": "GPIO34 / ADC1 (current demo moisture pin; occupied unless replacing it)"
+        "label": "GPIO34 / ADC1 input-only"
       },
       {
         "id": "GPIO32",

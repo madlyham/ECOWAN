@@ -918,9 +918,17 @@ function renderConfiguredSensors(root, n) {
   if (!host) return;
   var cfg = n.configuration;
   var hasConfiguredModules = !!(cfg && Array.isArray(cfg.sensors) && cfg.sensors.length);
-  // For configured nodes, use the module cards as the primary readout rather than
-  // forcing the legacy Temperature/Humidity/Moisture trio onto every device.
-  ['t','h','m'].forEach(function (key) { var read = K(root, key); if (read && read.closest('.read')) read.closest('.read').hidden = hasConfiguredModules; });
+  // Keep primary Temperature/Humidity/Moisture inline readouts and their deltas visible
+  // whenever values exist, giving the user instant visibility into live readings and changes!
+  ['t','h','m'].forEach(function (key) {
+    var read = K(root, key);
+    if (read && read.closest('.read')) {
+      var hasVal = (key === 't' && n.temperature != null) ||
+                   (key === 'h' && n.humidity != null) ||
+                   (key === 'm' && n.moisture != null);
+      read.closest('.read').hidden = !hasVal;
+    }
+  });
   if (!hasConfiguredModules) {
     host.hidden = true;
     host.textContent = '';
@@ -1557,6 +1565,35 @@ function cfgNewStableId() {
   else for (var i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
   return Array.prototype.map.call(bytes, function (b) { return b.toString(16).padStart(2, '0'); }).join('');
 }
+function cfgGetOccupiedPins(excludeRow) {
+  var occupied = {};
+  var rows = document.querySelectorAll('#cfgSensorRows [data-cfg-row]');
+  Array.prototype.forEach.call(rows, function (r) {
+    if (r === excludeRow) return;
+    var portEl = r.querySelector('[data-rowfield="port"]');
+    var partEl = r.querySelector('[data-rowfield="partId"]');
+    var d0El = r.querySelector('[data-rowfield="d0PinSelect"]');
+    var addrEl = r.querySelector('[data-rowfield="busAddress"]');
+    var labelEl = r.querySelector('[data-rowfield="label"]');
+    var part = partEl ? cfgGetPart(partEl.value) : null;
+    var name = (labelEl && labelEl.value) || (part && part.name) || 'Sensor';
+
+    if (portEl && portEl.value && /^GPIO\d+$/i.test(portEl.value)) {
+      occupied[portEl.value.toUpperCase()] = name;
+    }
+    var d0Val = (d0El && !d0El.hidden ? d0El.value : (addrEl && addrEl.value)) || '';
+    if (d0Val && /^GPIO\d+$/i.test(d0Val)) {
+      occupied[d0Val.toUpperCase()] = name + ' (DO)';
+    }
+  });
+  return occupied;
+}
+function cfgRefreshAllPortDropdowns(sourceRow) {
+  var rows = document.querySelectorAll('#cfgSensorRows [data-cfg-row]');
+  Array.prototype.forEach.call(rows, function (r) {
+    if (r !== sourceRow && r._refreshPorts) r._refreshPorts();
+  });
+}
 function cfgCreateSensorRow(data) {
   data = data || {};
   data.id = String(data.id || ('sensor-' + cfgNewStableId()));
@@ -1582,8 +1619,10 @@ function cfgCreateSensorRow(data) {
   var grid2 = el('div', 'cfg-sensor-grid two');
   var labelInput = cfgInput(data.label || '', 'e.g. Tank temperature'); labelInput.setAttribute('data-rowfield', 'label');
   var addressInput = cfgInput(data.busAddress || '', 'e.g. 1 or GPIO25 for light sensor D0'); addressInput.setAttribute('data-rowfield', 'busAddress');
+  var d0Select = cfgSelect([], data.busAddress || ''); d0Select.setAttribute('data-rowfield', 'd0PinSelect'); d0Select.hidden = true;
   var labelWrap = cfgLabel('Display name', labelInput);
   var addressWrap = cfgLabel('Bus address / light sensor D0 pin (GPIOxx)', addressInput);
+  addressWrap.appendChild(d0Select);
   grid2.appendChild(labelWrap); grid2.appendChild(addressWrap); row.appendChild(grid2);
 
   var compat = el('div', 'cfg-sub'); compat.setAttribute('data-row-compat', '1'); row.appendChild(compat);
@@ -1598,28 +1637,32 @@ function cfgCreateSensorRow(data) {
     if (options.some(function (o) { return o.value === currentProtocol; })) protoSelect.value = currentProtocol;
     else if (options.length) protoSelect.value = options[0].value;
     if (resetFields || !labelInput.value) labelInput.value = part ? part.name : 'Custom module';
-    if (resetFields) addressInput.value = '';
+    if (resetFields) { addressInput.value = ''; d0Select.value = ''; }
 
     if (partSelect.value === 'light_sensor_4pin') {
       protoWrap.firstChild.textContent = 'Pin Mode';
       if (protoSelect.value === 'gpio') {
         portWrap.firstChild.textContent = 'Digital Pin (DO)';
-        addressWrap.firstChild.textContent = 'Secondary Pin';
-        addressInput.placeholder = 'N/A for Digital-Only';
-        addressInput.disabled = true;
+        addressWrap.firstChild.textContent = 'Secondary Pin (Not used in DO mode)';
+        addressInput.hidden = true;
+        d0Select.hidden = true;
         addressInput.value = '';
+        d0Select.value = '';
       } else {
         portWrap.firstChild.textContent = 'Analog Pin (AO)';
-        addressWrap.firstChild.textContent = 'Digital Pin (DO) [Optional for Dual Mode]';
-        addressInput.placeholder = 'e.g. GPIO25 (leave blank for AO only)';
-        addressInput.disabled = false;
+        addressWrap.firstChild.textContent = 'Digital Pin (DO) [Dual Mode]';
+        addressInput.hidden = true;
+        d0Select.hidden = false;
+        refreshD0Ports();
       }
-      compat.textContent = '4-pin Light Sensor: AO gives continuous 0–4095 light reading (wire to GPIO35). DO gives threshold trigger (wire to GPIO25). Enter GPIO25 for Dual Mode, or leave blank for AO-only.';
+      compat.textContent = '4-pin Light Sensor: AO gives continuous 0–4095 light reading (wire to GPIO35). DO gives threshold trigger (wire to GPIO25). Choose DO pin above for Dual Mode, or leave "None" for AO-only.';
     } else {
       protoWrap.firstChild.textContent = 'Protocol';
       portWrap.firstChild.textContent = 'Interface / port';
       addressWrap.firstChild.textContent = 'Bus address / slave ID';
       addressInput.placeholder = 'e.g. 1 or 0x76';
+      addressInput.hidden = false;
+      d0Select.hidden = true;
       addressInput.disabled = false;
       compat.textContent = (part && part.description ? part.description + ' ' : '') +
         (part && Array.isArray(part.notes) && part.notes.length ? part.notes.join(' ') : '');
@@ -1630,33 +1673,91 @@ function cfgCreateSensorRow(data) {
     else cfgRenderFieldList(fieldsBox, Array.isArray(data.fields) ? data.fields : (part ? (part.fields || []) : []));
     cfgUpdateCompatibility();
   }
-  addressInput.addEventListener('input', function () {
-    if (partSelect.value === 'light_sensor_4pin' && protoSelect.value === 'analog') {
-      var hasD0 = addressInput.value && /^(?:GPIO)?\d+$/i.test(addressInput.value.trim());
-      var currentFields = [];
-      Array.prototype.forEach.call(fieldsBox.querySelectorAll('.cfg-field'), function (wrap) {
-        var keyEl = wrap.querySelector('[data-fieldpart="key"]');
-        if (keyEl && keyEl.value) currentFields.push(keyEl.value);
-      });
-      if (hasD0 && currentFields.indexOf('light_digital_state') < 0) {
-        var part = cfgGetPart('light_sensor_4pin');
-        cfgRenderFieldList(fieldsBox, part ? part.fields : []);
-      } else if (!hasD0 && currentFields.indexOf('light_digital_state') >= 0) {
-        cfgRenderFieldList(fieldsBox, [{ key: 'light_adc', label: 'Light sensor AO raw ADC', unit: 'ADC', wireType: 0x11 }]);
-      }
-    }
-    cfgUpdateCompatibility();
-  });
+
   function refreshPorts(reset) {
     var opts = cfgPortsForProtocol(protoSelect.value);
     var current = reset ? null : (data.port || portSelect.value);
+    var occupied = cfgGetOccupiedPins(row);
     portSelect.textContent = '';
-    opts.forEach(function (option) { var opt = el('option', '', option.label); opt.value = option.value; portSelect.appendChild(opt); });
+    opts.forEach(function (option) {
+      var pinKey = option.value.toUpperCase();
+      var isTaken = occupied[pinKey] && pinKey !== String(current).toUpperCase();
+      var label = option.label;
+      if (isTaken) label += ' (in use by ' + occupied[pinKey] + ')';
+      var opt = el('option', '', label);
+      opt.value = option.value;
+      if (isTaken) opt.disabled = true;
+      portSelect.appendChild(opt);
+    });
     if (opts.some(function (o) { return o.value === current; })) portSelect.value = current;
-    else if (opts.length) portSelect.value = opts[0].value;
+    else {
+      var firstAvailable = Array.from(portSelect.options).find(function (o) { return !o.disabled; });
+      if (firstAvailable) portSelect.value = firstAvailable.value;
+      else if (opts.length) portSelect.value = opts[0].value;
+    }
+    if (partSelect.value === 'light_sensor_4pin' && !d0Select.hidden) refreshD0Ports();
   }
-  partSelect.addEventListener('change', function () { data.protocol = null; data.port = null; refreshPart(true); });
-  protoSelect.addEventListener('change', function () { data.port = null; refreshPorts(true); cfgUpdateCompatibility(); });
+
+  function refreshD0Ports() {
+    var opts = cfgPortsForProtocol('gpio');
+    var current = (data.busAddress || d0Select.value || '').toUpperCase();
+    var occupied = cfgGetOccupiedPins(row);
+    if (portSelect.value) occupied[portSelect.value.toUpperCase()] = (labelInput.value || 'Light Sensor') + ' (AO)';
+    d0Select.textContent = '';
+    var noneOpt = el('option', '', 'None (AO Only)');
+    noneOpt.value = '';
+    d0Select.appendChild(noneOpt);
+    opts.forEach(function (option) {
+      var pinKey = option.value.toUpperCase();
+      var isTaken = occupied[pinKey] && pinKey !== current;
+      var label = option.label;
+      if (isTaken) label += ' (in use by ' + occupied[pinKey] + ')';
+      var opt = el('option', '', label);
+      opt.value = option.value;
+      if (isTaken) opt.disabled = true;
+      d0Select.appendChild(opt);
+    });
+    if (Array.from(d0Select.options).some(function (o) { return o.value === current; })) d0Select.value = current;
+    else d0Select.value = '';
+  }
+
+  row._refreshPorts = function () {
+    refreshPorts(false);
+    if (!d0Select.hidden) refreshD0Ports();
+  };
+
+  partSelect.addEventListener('change', function () { data.protocol = null; data.port = null; refreshPart(true); cfgRefreshAllPortDropdowns(row); });
+  protoSelect.addEventListener('change', function () { data.port = null; refreshPorts(true); cfgRefreshAllPortDropdowns(row); cfgUpdateCompatibility(); });
+  portSelect.addEventListener('change', function () { cfgRefreshAllPortDropdowns(row); cfgUpdateCompatibility(); });
+
+  d0Select.addEventListener('change', function () {
+    addressInput.value = d0Select.value;
+    var hasD0 = !!d0Select.value;
+    var currentFields = [];
+    Array.prototype.forEach.call(fieldsBox.querySelectorAll('.cfg-field'), function (wrap) {
+      var keyEl = wrap.querySelector('[data-fieldpart="key"]');
+      if (keyEl && keyEl.value) currentFields.push(keyEl.value);
+    });
+    if (hasD0 && currentFields.indexOf('light_digital_state') < 0) {
+      var part = cfgGetPart('light_sensor_4pin');
+      cfgRenderFieldList(fieldsBox, part ? part.fields : []);
+    } else if (!hasD0 && currentFields.indexOf('light_digital_state') >= 0) {
+      cfgRenderFieldList(fieldsBox, [{ key: 'light_adc', label: 'Light sensor AO raw ADC', unit: 'ADC', wireType: 0x11 }]);
+    }
+    cfgRefreshAllPortDropdowns(row);
+    cfgUpdateCompatibility();
+  });
+
+  addressInput.addEventListener('input', function () {
+    cfgUpdateCompatibility();
+  });
+
+  remove.addEventListener('click', function () {
+    row.remove();
+    cfgRefreshAllPortDropdowns(null);
+    cfgUpdateCompatibility();
+  });
+
   row._get = function () {
     var fields = [];
     Array.prototype.forEach.call(fieldsBox.querySelectorAll('.cfg-field'), function (wrap) {
@@ -1666,21 +1767,24 @@ function cfgCreateSensorRow(data) {
       fields.push({ key: keyEl.value.trim().replace(/[^A-Za-z0-9_.-]/g, '_').slice(0,64), label: labelEl ? labelEl.value.trim() : keyEl.value.trim(), unit: unitEl ? unitEl.value.trim() : '', wireType: typeEl ? Number(typeEl.value) : null });
     });
     var part = cfgGetPart(partSelect.value);
+    var busAddr = (partSelect.value === 'light_sensor_4pin' && !d0Select.hidden) ? d0Select.value : addressInput.value;
     return {
       id: data.id, partId: partSelect.value, label: labelInput.value.trim() || (part ? part.name : 'Module'),
-      protocol: protoSelect.value, port: portSelect.value, busAddress: addressInput.value.trim(),
+      protocol: protoSelect.value, port: portSelect.value, busAddress: (busAddr || '').trim(),
       notes: '', fields: fields, compatibility: part ? part.compatibility : 'custom_driver'
     };
   };
+
   refreshPart(!data.partId);
   if (data.partId) {
     partSelect.value = data.partId;
     refreshPart(false);
     if (data.label) labelInput.value = data.label;
-    if (data.busAddress) addressInput.value = data.busAddress;
+    if (data.busAddress) { addressInput.value = data.busAddress; d0Select.value = data.busAddress; }
     if (data.protocol) protoSelect.value = data.protocol;
     refreshPorts(false);
     if (data.port) portSelect.value = data.port;
+    if (!d0Select.hidden) refreshD0Ports();
   }
   $('#cfgSensorRows').appendChild(row);
   return row;
