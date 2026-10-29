@@ -547,6 +547,7 @@ button, .btn, select { min-height: 40px; }
     <span class="spacer"></span>
     <button class="btn cfg-final-action" id="cfgExport" type="button" hidden>Download JSON</button>
     <button class="btn cfg-final-action" id="cfgGenerate" type="button" hidden>Download Core-First .ino</button>
+    <button class="btn cfg-final-action" id="cfgCompile" type="button" hidden>Compile &amp; Download .bin</button>
     <button class="btn cfg-final-action" id="cfgBundle" type="button" hidden>Download field bundle</button>
     <button class="btn cfg-final-action" id="cfgSave" type="button" hidden>Save configuration</button>
     <button class="btn" id="cfgCloseBottom" type="button">Close</button>
@@ -1501,6 +1502,12 @@ function cfgOptionsForParts() {
   return cfgSelectableParts().map(function (p) { return { value: p.id, label: p.name }; });
 }
 function cfgCurrentProtocolOptions(part) {
+  if (part && part.id === 'light_sensor_4pin') {
+    return [
+      { value: 'analog', label: 'Dual (AO Analog + DO Digital) / AO Only' },
+      { value: 'gpio', label: 'Digital DO Only (Threshold Switch)' }
+    ];
+  }
   var list = part && Array.isArray(part.protocols) ? part.protocols : ['custom'];
   return list.map(function (id) { var proto = cfgGetProtocol(id); return { value: id, label: proto ? proto.label : id }; });
 }
@@ -1575,7 +1582,9 @@ function cfgCreateSensorRow(data) {
   var grid2 = el('div', 'cfg-sensor-grid two');
   var labelInput = cfgInput(data.label || '', 'e.g. Tank temperature'); labelInput.setAttribute('data-rowfield', 'label');
   var addressInput = cfgInput(data.busAddress || '', 'e.g. 1 or GPIO25 for light sensor D0'); addressInput.setAttribute('data-rowfield', 'busAddress');
-  grid2.appendChild(cfgLabel('Display name', labelInput)); grid2.appendChild(cfgLabel('Bus address / light sensor D0 pin (GPIOxx)', addressInput)); row.appendChild(grid2);
+  var labelWrap = cfgLabel('Display name', labelInput);
+  var addressWrap = cfgLabel('Bus address / light sensor D0 pin (GPIOxx)', addressInput);
+  grid2.appendChild(labelWrap); grid2.appendChild(addressWrap); row.appendChild(grid2);
 
   var compat = el('div', 'cfg-sub'); compat.setAttribute('data-row-compat', '1'); row.appendChild(compat);
   var fieldsBox = el('div', 'cfg-field-list'); fieldsBox.setAttribute('data-row-fields', '1'); row.appendChild(fieldsBox);
@@ -1590,14 +1599,54 @@ function cfgCreateSensorRow(data) {
     else if (options.length) protoSelect.value = options[0].value;
     if (resetFields || !labelInput.value) labelInput.value = part ? part.name : 'Custom module';
     if (resetFields) addressInput.value = '';
-    if (partSelect.value === 'light_sensor_4pin') { addressInput.placeholder = 'Optional D0 GPIO, e.g. GPIO25'; } else { addressInput.placeholder = 'e.g. 1 or GPIO25 for light sensor D0'; }
+
+    if (partSelect.value === 'light_sensor_4pin') {
+      protoWrap.firstChild.textContent = 'Pin Mode';
+      if (protoSelect.value === 'gpio') {
+        portWrap.firstChild.textContent = 'Digital Pin (DO)';
+        addressWrap.firstChild.textContent = 'Secondary Pin';
+        addressInput.placeholder = 'N/A for Digital-Only';
+        addressInput.disabled = true;
+        addressInput.value = '';
+      } else {
+        portWrap.firstChild.textContent = 'Analog Pin (AO)';
+        addressWrap.firstChild.textContent = 'Digital Pin (DO) [Optional for Dual Mode]';
+        addressInput.placeholder = 'e.g. GPIO25 (leave blank for AO only)';
+        addressInput.disabled = false;
+      }
+      compat.textContent = '4-pin Light Sensor: AO gives continuous 0–4095 light reading (wire to GPIO35). DO gives threshold trigger (wire to GPIO25). Enter GPIO25 for Dual Mode, or leave blank for AO-only.';
+    } else {
+      protoWrap.firstChild.textContent = 'Protocol';
+      portWrap.firstChild.textContent = 'Interface / port';
+      addressWrap.firstChild.textContent = 'Bus address / slave ID';
+      addressInput.placeholder = 'e.g. 1 or 0x76';
+      addressInput.disabled = false;
+      compat.textContent = (part && part.description ? part.description + ' ' : '') +
+        (part && Array.isArray(part.notes) && part.notes.length ? part.notes.join(' ') : '');
+    }
+
     refreshPorts(resetFields);
     if (resetFields) cfgRenderFieldList(fieldsBox, part ? (part.fields || []) : []);
     else cfgRenderFieldList(fieldsBox, Array.isArray(data.fields) ? data.fields : (part ? (part.fields || []) : []));
-    compat.textContent = (part && part.description ? part.description + ' ' : '') +
-      (part && Array.isArray(part.notes) && part.notes.length ? part.notes.join(' ') : '');
     cfgUpdateCompatibility();
   }
+  addressInput.addEventListener('input', function () {
+    if (partSelect.value === 'light_sensor_4pin' && protoSelect.value === 'analog') {
+      var hasD0 = addressInput.value && /^(?:GPIO)?\d+$/i.test(addressInput.value.trim());
+      var currentFields = [];
+      Array.prototype.forEach.call(fieldsBox.querySelectorAll('.cfg-field'), function (wrap) {
+        var keyEl = wrap.querySelector('[data-fieldpart="key"]');
+        if (keyEl && keyEl.value) currentFields.push(keyEl.value);
+      });
+      if (hasD0 && currentFields.indexOf('light_digital_state') < 0) {
+        var part = cfgGetPart('light_sensor_4pin');
+        cfgRenderFieldList(fieldsBox, part ? part.fields : []);
+      } else if (!hasD0 && currentFields.indexOf('light_digital_state') >= 0) {
+        cfgRenderFieldList(fieldsBox, [{ key: 'light_adc', label: 'Light sensor AO raw ADC', unit: 'ADC', wireType: 0x11 }]);
+      }
+    }
+    cfgUpdateCompatibility();
+  });
   function refreshPorts(reset) {
     var opts = cfgPortsForProtocol(protoSelect.value);
     var current = reset ? null : (data.port || portSelect.value);
@@ -1661,7 +1710,8 @@ var CFG_BOARD_PROFILES = {
 var CFG_REFERENCE_NODES = {
   "d251f42dc4918f96": {
     devEui: "d251f42dc4918f96", name: "ENode1", joinEui: "827b193dd87983cf",
-    otaApSsid: "ECOWAN-ENode1", reportingIntervalSeconds: 60, utcSlotSecond: 5,
+    nwkKey: "970dd38bd89c7accb2dba04d1a429421", appKey: "970dd38bd89c7accb2dba04d1a429421",
+    otaApSsid: "ECOWAN-ENode1", otaApPassword: "ecowan-maintenance-ota", reportingIntervalSeconds: 60, utcSlotSecond: 5,
     firmwareProfile: "esp32_lorawan",
     sensors: [
       { id: "enode1-dht11", partId: "dht11", label: "DHT11", protocol: "gpio", port: "GPIO4", fields: [{key:"temperature",label:"Temperature",unit:"°C"},{key:"humidity",label:"Humidity",unit:"%RH"}] },
@@ -1670,7 +1720,8 @@ var CFG_REFERENCE_NODES = {
   },
   "b1e299ff3eed5d1d": {
     devEui: "b1e299ff3eed5d1d", name: "ENode2", joinEui: "6bbf280ebd665410",
-    otaApSsid: "ECOWAN-ENode2", reportingIntervalSeconds: 60, utcSlotSecond: 35,
+    nwkKey: "cd1dd7a9b06c626c69b463e2c1c94cbb", appKey: "cd1dd7a9b06c626c69b463e2c1c94cbb",
+    otaApSsid: "ECOWAN-ENode2", otaApPassword: "ecowan-maintenance-ota", reportingIntervalSeconds: 60, utcSlotSecond: 35,
     firmwareProfile: "esp32_lorawan",
     sensors: [
       { id: "enode2-dht11", partId: "dht11", label: "DHT11", protocol: "gpio", port: "GPIO4", fields: [{key:"temperature",label:"Temperature",unit:"°C"},{key:"humidity",label:"Humidity",unit:"%RH"}] },
@@ -1783,11 +1834,13 @@ function cfgLoadNode(eui) {
   var defaultSlot = cfg && cfg.utcSlotSecond != null ? Number(cfg.utcSlotSecond) : (ref ? ref.utcSlotSecond : 5);
   var defaultJoinEui = cfg && cfg.joinEui ? cfg.joinEui : (ref ? ref.joinEui : '0000000000000000');
   var defaultSsid = cfg && (cfg.otaApSsid || cfg.otaSsid) ? (cfg.otaApSsid || cfg.otaSsid) : (ref ? ref.otaApSsid : (defaultName ? 'ECOWAN-' + defaultName.replace(/[^A-Za-z0-9_-]+/g, '') : 'ECOWAN-NODE-SET-ME'));
-  $('#cfgEui').value = eui === '__new' ? '' : eui;
+  var defaultNwkKey = cfg && cfg.nwkKey ? cfg.nwkKey : (ref && ref.nwkKey ? ref.nwkKey : '');
+  var defaultAppKey = cfg && cfg.appKey ? cfg.appKey : (ref && ref.appKey ? ref.appKey : '');
+  if ($('#cfgEui')) $('#cfgEui').value = eui === '__new' ? '' : eui;
   $('#cfgName').value = defaultName;
   if ($('#cfgJoinEui')) $('#cfgJoinEui').value = defaultJoinEui;
-  if ($('#cfgNwkKey')) $('#cfgNwkKey').value = cfg && cfg.nwkKey ? cfg.nwkKey : '';
-  if ($('#cfgAppKey')) $('#cfgAppKey').value = cfg && cfg.appKey ? cfg.appKey : '';
+  if ($('#cfgNwkKey')) $('#cfgNwkKey').value = defaultNwkKey;
+  if ($('#cfgAppKey')) $('#cfgAppKey').value = defaultAppKey;
   if ($('#cfgOtaSsid')) $('#cfgOtaSsid').value = defaultSsid;
   if ($('#cfgOtaPassword')) $('#cfgOtaPassword').value = cfg && (cfg.otaApPassword || cfg.otaPassword) ? (cfg.otaApPassword || cfg.otaPassword) : (defaultName ? 'ECOWAN-' + defaultName.replace(/[^A-Za-z0-9_-]+/g, '') : 'CHANGE_THIS_PASSWORD');
   $('#cfgInterval').value = cfg ? cfg.reportingIntervalSeconds : (node && node.interval ? Math.round(node.interval) : (ref ? ref.reportingIntervalSeconds : 60));
@@ -1915,6 +1968,9 @@ function cfgRenderReview() {
   ];
   values.forEach(function (item) { var card = el('div','cfg-review-item'); card.appendChild(el('span','',item[0])); card.appendChild(el('b','',item[1])); host.appendChild(card); });
   var emfNote=el('div','cfg-alert info','Core-First v2.4: Stationary WLAN .bin OTA, SX1262 LoRaWAN OTAA (5s settle delay + NVS persistence), DeviceTime UTC slot scheduler (immediate-TX at slot mark), and EMF1 v1 (FPort 10) are assembled into one sketch.'); host.appendChild(emfNote);
+  var deployNote = el('div', 'cfg-alert info');
+  deployNote.innerHTML = '<strong>Deployment Workflow:</strong><br>1. Click <b>Compile &amp; Download .bin</b> (or download .ino to compile locally).<br>2. Connect your Wi-Fi to <b>' + (payload.otaApSsid || 'ECOWAN-node') + '</b> (Password: <code>' + (payload.otaApPassword || 'CHANGE_THIS_PASSWORD') + '</code>).<br>3. Open <a href="http://192.168.4.1/" target="_blank" rel="noopener">http://192.168.4.1/</a> in browser, select the downloaded <code>.bin</code>, and click Upload.';
+  host.appendChild(deployNote);
   if (!sensors.length) { var note=el('div','cfg-alert info','No optional sensors selected — the generated sketch will transmit the Core Health Uptime field (0x10, uint32 seconds) on its assigned UTC slot.'); host.appendChild(note); }
 }
 function authShowLogin(message) {
@@ -1962,7 +2018,44 @@ function cfgNormalizePayload(raw) {
   var utcSlot = raw.utcSlotSecond !== undefined && raw.utcSlotSecond !== '' && raw.utcSlotSecond !== null ? Number(raw.utcSlotSecond) : (devEui === 'b1e299ff3eed5d1d' ? 35 : 5);
   var profileId = String(raw.firmwareProfile || 'esp32_lorawan').trim();
   var board = cfgGetBoardProfile(profileId);
-  var sensors = Array.isArray(raw.sensors) ? raw.sensors : [];
+  var sensors = (Array.isArray(raw.sensors) ? raw.sensors : []).map(function (s, sIdx) {
+    var sensor = Object.assign({}, s);
+    sensor.label = String(sensor.label || '').trim() || (sensor.partId || ('Module ' + (sIdx + 1)));
+    var part = cfgGetPart(sensor.partId);
+    var fields = Array.isArray(sensor.fields) && sensor.fields.length ? sensor.fields.slice() : [];
+    if (!fields.length) {
+      if (part && Array.isArray(part.fields) && part.fields.length) {
+        fields = part.fields.slice();
+      } else if (sensor.protocol === 'analog') {
+        fields = [{ key: (cfgSlug(sensor.label) || 'analog') + '_adc', label: sensor.label + ' ADC', unit: 'ADC', wireType: 0x11 }];
+      } else if (sensor.protocol === 'gpio') {
+        fields = [{ key: (cfgSlug(sensor.label) || 'digital') + '_state', label: sensor.label + ' State', unit: 'state', wireType: 0x01 }];
+      }
+    }
+    if (sensor.partId === 'light_sensor_4pin') {
+      if (sensor.protocol === 'gpio') {
+        fields = fields.filter(function (f) { return f.key !== 'light_adc'; });
+        if (!fields.length) {
+          fields = [{ key: 'light_digital_state', label: 'Light sensor DO state', unit: 'state', wireType: 0x01 }];
+        }
+      } else if (sensor.protocol === 'analog') {
+        var hasD0 = sensor.busAddress && /^(?:GPIO)?\d+$/i.test(String(sensor.busAddress).trim());
+        if (!hasD0) {
+          fields = fields.filter(function (f) { return f.key !== 'light_digital_state'; });
+          if (!fields.length) {
+            fields = [{ key: 'light_adc', label: 'Light sensor AO raw ADC', unit: 'ADC', wireType: 0x11 }];
+          }
+        } else {
+          var hasAdc = fields.some(function (f) { return f.key === 'light_adc'; });
+          var hasState = fields.some(function (f) { return f.key === 'light_digital_state'; });
+          if (!hasAdc) fields.unshift({ key: 'light_adc', label: 'Light sensor AO raw ADC', unit: 'ADC', wireType: 0x11 });
+          if (!hasState) fields.push({ key: 'light_digital_state', label: 'Light sensor DO state', unit: 'state', wireType: 0x01 });
+        }
+      }
+    }
+    sensor.fields = fields;
+    return sensor;
+  });
   var codecFields = cfgBuildCodecFields({sensors: sensors});
   return {
     devEui: devEui, joinEui: joinEui, nwkKey: nwkKey, appKey: appKey,
@@ -2327,7 +2420,7 @@ function cfgOtaCorePrefix(payload) {
     '      if (esp_ota_get_next_update_partition(nullptr) == nullptr) {',
     '        otaUploadRejected = true; otaUploadProblem = "No OTA application partition."; releaseCoreMutexIfHeldByUpload(); break;',
     '      }',
-    '      if (!Update.begin(UPDATE_SIZE_UNKNOWN)) {',
+    '      if (!Update.begin(UPDATE_SIZE_UNKNOWN, U_FLASH, 2, HIGH)) {',
     '        Update.printError(Serial); otaUploadRejected = true; otaUploadProblem = "Could not begin update."; releaseCoreMutexIfHeldByUpload();',
     '      } else {',
     '        Serial.printf("[OTA] Upload started: %s\\n", upload.filename.c_str());',
@@ -2470,6 +2563,11 @@ function cfgGeneratedEmf1Application(payload) {
       lines.push('float ' + prefix.toLowerCase() + '_temperature_c = NAN;');
       lines.push('float ' + prefix.toLowerCase() + '_humidity_rh = NAN;');
       directPins.push({prefix:prefix, pin:dhtPin, dht:true, sensorIndex:index, partId:sensor.partId});
+    } else if (sensor.partId === 'light_sensor_4pin' && sensor.protocol === 'gpio' && /^GPIO\d+$/.test(sensor.port)) {
+      var d0Pin = Number(sensor.port.slice(4));
+      lines.push('#define ' + prefix + '_D0_PIN ' + d0Pin);
+      lines.push('int ' + prefix.toLowerCase() + '_light_digital = LOW;');
+      directPins.push({prefix:prefix, pin:d0Pin, lightDigitalOnly:true, d0Pin:d0Pin, sensorIndex:index, partId:sensor.partId});
     } else if (sensor.partId === 'light_sensor_4pin' && sensor.protocol === 'analog' && /^GPIO\d+$/.test(sensor.port)) {
       var aoPin = Number(sensor.port.slice(4));
       var d0Text = String(sensor.busAddress || '').trim().toUpperCase();
@@ -2506,6 +2604,8 @@ function cfgGeneratedEmf1Application(payload) {
   directPins.forEach(function (d) {
     if (d.dht) {
       lines.push('  ' + d.prefix.toLowerCase() + '.begin();');
+    } else if (d.lightDigitalOnly) {
+      if (d.d0Pin < 34) lines.push('  pinMode(' + d.prefix + '_D0_PIN, INPUT);');
     } else if (d.lightDual) {
       if (d.aoPin < 34) lines.push('  pinMode(' + d.prefix + '_AO_PIN, INPUT);');
       if (d.d0Pin >= 0 && d.d0Pin < 34) lines.push('  pinMode(' + d.prefix + '_D0_PIN, INPUT);');
@@ -2534,6 +2634,8 @@ function cfgGeneratedEmf1Application(payload) {
       lines.push('    ' + v + '_temperature_c = ' + v + '.readTemperature();');
       lines.push('    ' + v + '_humidity_rh = ' + v + '.readHumidity();');
       lines.push('  }');
+    } else if (d.lightDigitalOnly) {
+      lines.push('  ' + v + '_light_digital = digitalRead(' + d.prefix + '_D0_PIN);');
     } else if (d.lightDual) {
       lines.push('  (void)analogRead(' + d.prefix + '_AO_PIN); delay(5);');
       lines.push('  ' + v + '_light_adc = (uint16_t)analogRead(' + d.prefix + '_AO_PIN);');
@@ -2558,14 +2660,17 @@ function cfgGeneratedEmf1Application(payload) {
         lines.push('  if (isfinite('+varbase+'_humidity_rh)) emfAddValue('+f.id+', 0x'+Number(f.typeCode).toString(16).padStart(2,'0')+', '+varbase+'_humidity_rh);'); emittedBySensor[f.sensorIndex+'|'+f.sourceKey]=true;
       } else if(d.lightDual && ['light_adc','light_analog_adc'].indexOf(f.sourceKey)>=0) {
         lines.push('  emfAddValue('+f.id+', 0x'+Number(f.typeCode).toString(16).padStart(2,'0')+', '+varbase+'_light_adc);'); emittedBySensor[f.sensorIndex+'|'+f.sourceKey]=true;
-      } else if(d.lightDual && ['light_digital_state','light_state','digital_input'].indexOf(f.sourceKey)>=0 && d.d0Pin >= 0) {
-        lines.push('  emfAddBool('+f.id+', '+varbase+'_light_digital != LOW);'); emittedBySensor[f.sensorIndex+'|'+f.sourceKey]=true;
+      } else if((d.lightDual || d.lightDigitalOnly) && ['light_digital_state','light_state','digital_input'].indexOf(f.sourceKey)>=0 && (d.lightDigitalOnly || d.d0Pin >= 0)) {
+        // LM393 DO comparator pulls LOW when light is detected (Active-LOW)
+        lines.push('  emfAddBool('+f.id+', '+varbase+'_light_digital == LOW);'); emittedBySensor[f.sensorIndex+'|'+f.sourceKey]=true;
       } else if(d.analog && d.partId==='hw038_moisture' && ['moisture','moisture_raw_adc'].indexOf(f.sourceKey)>=0) {
         lines.push('  emfAddValue('+f.id+', 0x'+Number(f.typeCode).toString(16).padStart(2,'0')+', '+varbase+'_raw);'); emittedBySensor[f.sensorIndex+'|'+f.sourceKey]=true;
       } else if(d.analog) {
         lines.push('  emfAddValue('+f.id+', 0x'+Number(f.typeCode).toString(16).padStart(2,'0')+', '+varbase+'_raw);'); emittedBySensor[f.sensorIndex+'|'+f.sourceKey]=true;
-      } else if(!d.dht && !d.analog && f.typeCode===0x01) {
+      } else if(!d.dht && !d.analog && !d.lightDigitalOnly && !d.lightDual && f.typeCode===0x01) {
         lines.push('  emfAddBool('+f.id+', '+varbase+'_state != LOW);'); emittedBySensor[f.sensorIndex+'|'+f.sourceKey]=true;
+      } else if(!d.dht && !d.analog && !d.lightDigitalOnly && !d.lightDual) {
+        lines.push('  emfAddValue('+f.id+', 0x'+Number(f.typeCode).toString(16).padStart(2,'0')+', static_cast<double>('+varbase+'_state));'); emittedBySensor[f.sensorIndex+'|'+f.sourceKey]=true;
       }
     });
   });
@@ -2711,13 +2816,16 @@ function cfgGeneratedEmf1Application(payload) {
   lines.push('void setup() {');
   lines.push('  Serial.begin(115200); delay(300);');
   lines.push('  Serial.printf("\\n[NodeCore] Booting %s\\n", NODE_NAME);');
-  lines.push('  initApplicationSensors();');
   lines.push('  coreMutex = xSemaphoreCreateMutex();');
-  lines.push('  if (!otaBegin()) Serial.println("[OTA] WARNING: maintenance AP did not start.");');
+  lines.push('  if (coreMutex == nullptr) { Serial.println("[Core] FATAL: mutex allocation failed."); while (true) delay(1000); }');
+  lines.push('  // Initialize Radio FIRST on clean power rail (matching verified hardware baseline)');
   lines.push('  if (xSemaphoreTake(coreMutex, portMAX_DELAY) != pdTRUE) while (true) delay(1000);');
   lines.push('  const bool started = beginRadioAndLoRaWAN();');
   lines.push('  xSemaphoreGive(coreMutex);');
-  lines.push('  if (!started) { while (true) { Serial.println("[Core] Radio setup failed; OTA remains active."); delay(10000); } }');
+  lines.push('  if (!started) { while (true) { Serial.println("[Core] Radio setup failed; reboot to retry."); delay(10000); } }');
+  lines.push('  initApplicationSensors();');
+  lines.push('  // Start WLAN maintenance AP after radio initialization');
+  lines.push('  if (!otaBegin()) Serial.println("[OTA] WARNING: maintenance AP did not start.");');
   lines.push('  randomSeed(static_cast<uint32_t>(esp_random()));');
   lines.push('  const uint32_t startupDelay = FIRST_UPLINK_DELAY_MS + static_cast<uint32_t>(random(0, 5001));');
   lines.push('  Serial.printf("[Scheduler] UTC slot is second %lu in each %lu s interval.\\n",');
@@ -2784,6 +2892,81 @@ function cfgGenerateCurrent() {
   var filename = cfgSketchName(payload.name) + '.ino';
   cfgDownload(filename, source, 'text/plain;charset=utf-8');
   cfgSetStatus('Downloaded ' + filename + ' with stationary ECOWAN NodeCore v2.4 (WLAN OTA + 5s LoRa settle + OTAA/NVS + UTC slot second ' + payload.utcSlotSecond + ' + EMF1 FPort 10).', 'warn');
+}
+
+function cfgCompileCurrent() {
+  var payload, source;
+  try {
+    payload = cfgValidate(cfgReadForm());
+    source = cfgAssembledSketchSource(payload);
+  } catch (err) { cfgSetStatus(err.message, 'error'); return; }
+  var sketchName = cfgSketchName(payload.name);
+  var btn = $('#cfgCompile');
+  if (btn) btn.disabled = true;
+
+  var startTime = Date.now();
+  var timerId = setInterval(function () {
+    var elapsed = Math.round((Date.now() - startTime) / 1000);
+    cfgSetStatus('Compiling ' + sketchName + ' into .bin with arduino-cli (' + elapsed + 's elapsed, typical build takes 30-90s)... please wait.', 'warn');
+  }, 1000);
+  cfgSetStatus('Connecting to compiler... please wait.', 'warn');
+
+  function tryFetch(url) {
+    return fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sketchName: sketchName, sketchSource: source, configuration: payload })
+    }).then(function (r) {
+      if (!r.ok) {
+        return r.json().catch(function () { return {}; }).then(function (b) {
+          throw new Error(b.error || ('HTTP ' + r.status + (b.details ? ': ' + b.details : '')));
+        });
+      }
+      var ctype = (r.headers.get('Content-Type') || '').toLowerCase();
+      if (!ctype.includes('application/octet-stream')) {
+        return r.text().then(function (txt) {
+          throw new Error('Server returned text instead of firmware binary: ' + txt.slice(0, 100));
+        });
+      }
+      return r.blob();
+    }).then(function (blob) {
+      if (blob.size < 50000) {
+        throw new Error('Downloaded file too small to be valid firmware (' + blob.size + ' bytes)');
+      }
+      return blob;
+    });
+  }
+
+  // Try endpoints in priority order:
+  // 1. Dashboard origin endpoint proxy: api/compile
+  // 2. Dedicated LaCave build server over Tailscale: http://100.93.135.116:8027/api/compile
+  // 3. Local PC bridge fallback: http://127.0.0.1:8027/api/compile
+  tryFetch('api/compile')
+    .catch(function (err1) {
+      return tryFetch('http://100.93.135.116:8027/api/compile')
+        .catch(function (err2) {
+          return tryFetch('http://127.0.0.1:8027/api/compile')
+            .catch(function (err3) {
+              throw new Error('Build failed: ' + (err1.message || err2.message || err3.message));
+            });
+        });
+    })
+    .then(function (blob) {
+      var filename = sketchName + '.ino.bin';
+      var url = URL.createObjectURL(blob), a = el('a');
+      a.href = url; a.download = filename;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(function () { URL.revokeObjectURL(url); }, 120000);
+      var ssid = payload.otaApSsid || ('ECOWAN-' + payload.name);
+      cfgSetStatus('Success! Downloaded ' + filename + ' (' + (blob.size / 1024).toFixed(1) + ' KB). Deploy steps: 1) Connect Wi-Fi to ' + ssid + ' (password: ' + (payload.otaApPassword || 'CHANGE_THIS_PASSWORD') + ') -> 2) Open http://192.168.4.1/ in browser -> 3) Choose ' + filename + ' and upload.', 'good');
+    })
+    .catch(function (err) {
+      cfgSetStatus('Compilation failed: ' + err.message + '. Ensure LaCave compiler bridge is active or click "Download Core-First .ino" to compile manually.', 'error');
+    })
+    .finally(function () {
+      clearInterval(timerId);
+      if (btn) btn.disabled = false;
+    });
 }
 
 function refreshDynamicMetrics(st) {
@@ -2862,6 +3045,7 @@ function wire() {
   $('#cfgSave').addEventListener('click', cfgSaveCurrent);
   $('#cfgExport').addEventListener('click', cfgExportCurrent);
   $('#cfgGenerate').addEventListener('click', cfgGenerateCurrent);
+  var btnCompile = $('#cfgCompile'); if (btnCompile) btnCompile.addEventListener('click', cfgCompileCurrent);
   $('#cfgDlg').addEventListener('click', function (e) { if (e.target === this && this.close) this.close(); });
   $('#btnTheme').addEventListener('click', function () {
     setTheme(document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark', true);

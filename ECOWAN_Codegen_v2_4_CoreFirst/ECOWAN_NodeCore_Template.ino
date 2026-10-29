@@ -629,12 +629,7 @@ void setup() {
     while (true) delay(1000);
   }
 
-  if (!otaBegin()) {
-    Serial.println("[OTA] WARNING: maintenance AP/task did not start; normal LoRaWAN boot continues.");
-  }
-
-
-  // Serialize radio/session flash operations against an in-progress OTA upload.
+  // Initialize Radio FIRST on clean power rail (matching working baseline)
   if (xSemaphoreTake(coreMutex, portMAX_DELAY) != pdTRUE) {
     Serial.println("[Core] FATAL: could not acquire core mutex.");
     while (true) delay(1000);
@@ -643,12 +638,16 @@ void setup() {
   xSemaphoreGive(coreMutex);
 
   if (!started) {
-    Serial.println("[LoRaWAN] Radio/session setup failed. OTA remains available for maintenance.");
-    // Do not hard-lock the MCU; the OTA task remains alive. Reboot to retry.
+    Serial.println("[LoRaWAN] Radio/session setup failed. Check wiring, power, and SPI pins.");
     while (true) {
       Serial.println("[Core] Radio setup is not ready; reboot to retry after checking wiring/config.");
       delay(10000);
     }
+  }
+
+  // Start WLAN maintenance AP after radio is initialized
+  if (!otaBegin()) {
+    Serial.println("[OTA] WARNING: maintenance AP/task did not start; normal LoRaWAN boot continues.");
   }
   Serial.println("[NodeCore] Core initialized: WLAN OTA + LoRaWAN + UTC slots + EMF1.");
 

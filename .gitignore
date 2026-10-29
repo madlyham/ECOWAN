@@ -30,3 +30,7 @@ edge_monitor_state.json
 Thumbs.db
 .vscode/
 ~$*
+
+__pycache__/
+scratch_edge_dash.py
+*.bin

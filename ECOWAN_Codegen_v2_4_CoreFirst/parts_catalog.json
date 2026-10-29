@@ -118,7 +118,8 @@
       "name": "HW-038 soil-moisture module",
       "category": "sensor",
       "protocols": [
-        "analog"
+        "analog",
+        "gpio"
       ],
       "description": "Current demo hardware; analog voltage output.",
       "fields": [
@@ -195,7 +196,8 @@
       "name": "4-pin light sensor module (AO + DO)",
       "category": "sensor",
       "protocols": [
-        "analog"
+        "analog",
+        "gpio"
       ],
       "description": "Common small light-sensor module with VCC, GND, AO and DO. AO is a variable analog signal; DO is a thresholded digital output.",
       "fields": [

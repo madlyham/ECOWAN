@@ -125,3 +125,62 @@ Keep reports concise and avoid repeating information already established.
     - `ENODE1/ENODE1.ino` (changed scheduling behavior, added explicit SPI initialization, shortened join retry delay, and added time-sync failure tracking; not compiled or flashed).
     - `/root/.ssh/authorized_keys` on the Dragino gateway (SSH public key added).
   - Do not modify or revert these changes without explicit user instruction and approval.
+
+
+## 8. Plain-Language Communication & Guided Discovery
+
+These rules supplement the engineering and safety rules above. They do not override the approval gate, security rules, scope lock, or verification requirements.
+
+### 8.1 Explain for a Non-Technical Reader
+- Use clear, everyday language by default. Assume the user may not know programming, networking, embedded systems, or command-line terminology.
+- Start with the direct answer or current status, then explain only the detail needed to understand the decision.
+- When a technical term is necessary, define it briefly the first time it appears. Prefer a familiar analogy when it genuinely helps.
+- Avoid unexplained acronyms, jargon, dense paragraphs, and long lists of internal implementation details.
+- Separate what is known from what is suspected. Do not present a guess as a fact.
+- Keep routine updates short. Give more detail when the user asks, when a decision has meaningful risk, or when the user needs the detail to act safely.
+
+### 8.2 Describe Changes in Plain Language
+Whenever proposing or reporting a change, explain:
+1. **What will change:** name the file, setting, device, or service in plain language.
+2. **Why:** describe the problem the change is intended to solve.
+3. **What the user should notice:** explain the expected result without promising it before testing.
+4. **Risk and undo plan:** state any meaningful risk and how the change can be reversed.
+5. **Verification:** provide the smallest practical check and describe what success and failure look like.
+
+For code changes, also provide the exact diff or a clear summary of the edited lines, in accordance with Section 6.6. Never hide important side effects behind a simplified explanation.
+
+### 8.3 Make Next Steps Detailed, Simple, and Executable
+- Give numbered steps in the order the user should perform them.
+- Put commands in separate copy-ready code blocks. Say which application or terminal to use and which folder to be in.
+- State whether a command only reads information or changes something.
+- Avoid combining unrelated actions into one large command when separate steps would be easier to understand or troubleshoot.
+- After a step that could fail, explain what output to expect and what to send back if it differs.
+- Give only the next useful set of steps; do not bury the user under a long plan when the next result could change the plan.
+- Never claim that a command, edit, test, deployment, or fix succeeded unless its result has been observed.
+
+### 8.4 Ask Questions to Build the Missing Context
+- Before substantial work, identify what information is missing that could materially affect the solution.
+- If the task or project context is incomplete, ask a grouped set of focused questions in one message so the user can answer them together. Make it easy to reply with short answers, “not sure,” or “unknown.”
+- Ask about relevant goals, current behavior, expected behavior, environment and versions, what has already been tried, constraints, deadlines, preferred trade-offs, and what must not be changed. Ask only the categories relevant to the task.
+- For an ongoing project, ask for useful project context such as the intended users, current architecture, important files, how success is measured, available hardware/services, known limitations, and deployment or recovery constraints.
+- Do not ask questions whose answers are already available in the conversation or verified project files. Do not ask the user to repeat information.
+- Do not turn every tiny, clear task into an interview. For a small and unambiguous request, proceed within the existing approval rules.
+- If enough information is available to make safe progress, do read-only inspection first and ask only for decisions that genuinely require the user's input.
+- Never request passwords, API keys, private tokens, private SSH keys, or other secrets. Ask for redacted logs or non-sensitive configuration details instead.
+- Do not treat silence or an incomplete answer as permission to perform an action that requires approval under Section 6.3.
+
+### 8.5 Keep the User Oriented
+For multi-step tasks, maintain a concise running summary:
+- **Goal:** what we are trying to achieve.
+- **Confirmed:** what the evidence shows so far.
+- **Next step:** the single most useful action now.
+- **User decision needed:** only if a decision or approval is required.
+
+Update this summary when the situation changes. Avoid repeating settled facts or restarting broad investigations without a reason.
+
+### 8.6 Respect User Effort and Troubleshooting Scope
+- Prefer the smallest diagnostic action that can distinguish between the leading explanations.
+- Do not ask for screenshots when a specific command and its output would answer the question more clearly.
+- Do not make the user repeat long setup steps if the existing state can be checked first.
+- When a previous recommendation was wrong or did not work, acknowledge that plainly, explain what the new evidence changes, and do not defend the failed recommendation.
+- Preserve working configurations and create a backup before editing an existing configuration file, where practical.

@@ -86,6 +86,11 @@ assert.ok(enode1Source1.includes('#define ECOWAN_UTC_SLOT_SECOND 5UL'));
 assert.ok(enode1Source1.includes('static constexpr uint32_t FIRST_UPLINK_DELAY_MS = 10000UL;'));
 assert.ok(!enode1Source1.includes('loraNode.scheduleTransmission'), 'Generated sketch must NOT call loraNode.scheduleTransmission (causes SX1262 warm-sleep FIFO wipe)');
 assert.ok(enode1Source1.includes('nextSlotScheduled'), 'Generated sketch must use immediate-TX slot alignment');
+const setupBody = enode1Source1.slice(enode1Source1.indexOf('void setup()'));
+const radioIdx = setupBody.indexOf('beginRadioAndLoRaWAN();');
+const sensorIdx = setupBody.indexOf('initApplicationSensors();');
+const otaIdx = setupBody.indexOf('otaBegin()');
+assert.ok(radioIdx > 0 && sensorIdx > radioIdx && otaIdx > sensorIdx, 'Radio must initialize first on clean rail before sensors and before OTA access point');
 assert.strictEqual((enode1Source1.match(/void setup\(\)/g) || []).length, 1, 'Exactly one setup() must exist');
 assert.strictEqual((enode1Source1.match(/void loop\(\)/g) || []).length, 1, 'Exactly one loop() must exist');
 
@@ -134,7 +139,56 @@ const coreOnlyProfile = Object.assign({}, enode1Profile, { name: 'CoreHealthNode
 const coreOnlySource = api.cfgAssembledSketchSource(coreOnlyProfile);
 assert.ok(coreOnlySource.includes('emfAddValue(0x10, 0x31, static_cast<double>(uptimeSeconds));'));
 
-// 4. Test Invalid Configuration Rejections
+// 4. Test Automated Module Binding (User provides only port and protocol; no manual fields)
+const autoModuleProfile = Object.assign({}, enode1Profile, {
+  name: 'AutoModuleNode',
+  sensors: [
+    { id: 'custom-analog', label: 'Analog Sensor', protocol: 'analog', port: 'GPIO35' },
+    { id: 'custom-gpio', label: 'Door Switch', protocol: 'gpio', port: 'GPIO25' }
+  ]
+});
+const autoSource = api.cfgAssembledSketchSource(autoModuleProfile);
+assert.ok(autoSource.includes('#define SENSOR_1_PIN 35'), 'Custom analog pin must be defined');
+assert.ok(autoSource.includes('#define SENSOR_2_PIN 25'), 'Custom digital pin must be defined');
+assert.ok(autoSource.includes('sensor_1_raw'), 'Analog ADC 16-sample averaging routine must be generated');
+assert.ok(autoSource.includes('digitalRead(SENSOR_2_PIN)'), 'Digital read must be generated');
+assert.ok(!autoSource.includes('TODO driver binding'), 'No TODO bindings should remain when user selects port/protocol');
+
+// 4b. Test Light Sensor with only D0 connected on GPIO25 (AO unplugged)
+const lightD0OnlyProfile = Object.assign({}, enode2Profile, {
+  name: 'ENode2_LightD0Only',
+  sensors: [
+    { id: 'enode2-dht11', partId: 'dht11', label: 'DHT11', protocol: 'gpio', port: 'GPIO4' },
+    { id: 'enode2-hw038', partId: 'hw038_moisture', label: 'HW-038', protocol: 'analog', port: 'GPIO34' },
+    { id: 'enode2-light-d0', partId: 'light_sensor_4pin', label: 'Light DO Only', protocol: 'gpio', port: 'GPIO25' }
+  ]
+});
+const lightD0OnlySource = api.cfgAssembledSketchSource(lightD0OnlyProfile);
+assert.ok(lightD0OnlySource.includes('#define SENSOR_3_D0_PIN 25'), 'D0 pin 25 must be defined');
+assert.ok(!lightD0OnlySource.includes('SENSOR_3_AO_PIN'), 'AO pin must NOT be defined when analog is unplugged');
+assert.ok(lightD0OnlySource.includes('pinMode(SENSOR_3_D0_PIN, INPUT)'), 'D0 pin must be set to INPUT');
+assert.ok(lightD0OnlySource.includes('digitalRead(SENSOR_3_D0_PIN)'), 'D0 pin must be read with digitalRead');
+assert.ok(lightD0OnlySource.includes('emfAddBool('), 'D0 state must be encoded into EMF1 bool');
+assert.ok(!lightD0OnlySource.includes('TODO driver binding'), 'No TODO bindings should remain');
+
+// 4c. Test Light Sensor with only AO connected on GPIO35 (D0 blank / unplugged)
+const lightAOOnlyProfile = Object.assign({}, enode2Profile, {
+  name: 'ENode2_LightAOOnly',
+  sensors: [
+    { id: 'enode2-dht11', partId: 'dht11', label: 'DHT11', protocol: 'gpio', port: 'GPIO4' },
+    { id: 'enode2-hw038', partId: 'hw038_moisture', label: 'HW-038', protocol: 'analog', port: 'GPIO34' },
+    { id: 'enode2-light-ao', partId: 'light_sensor_4pin', label: 'Light AO Only', protocol: 'analog', port: 'GPIO35', busAddress: '' }
+  ]
+});
+const lightAOSource = api.cfgAssembledSketchSource(lightAOOnlyProfile);
+assert.ok(lightAOSource.includes('#define SENSOR_3_AO_PIN 35'), 'AO pin 35 must be defined');
+assert.ok(!lightAOSource.includes('SENSOR_3_D0_PIN'), 'D0 pin must NOT be defined when blank');
+assert.ok(!lightAOSource.includes('pinMode(SENSOR_3_AO_PIN'), 'Input-only GPIO35 must not have pinMode() called');
+assert.ok(lightAOSource.includes('analogRead(SENSOR_3_AO_PIN)'), 'AO pin must be read with analogRead');
+assert.ok(lightAOSource.includes('emfAddValue('), 'AO raw ADC must be encoded into EMF1');
+assert.ok(!lightAOSource.includes('TODO driver binding'), 'No TODO bindings should remain');
+
+// 5. Test Invalid Configuration Rejections
 const invalidCases = [
   { name: 'missing name', patch: { name: '' }, match: /node name/i },
   { name: 'all-zero DevEUI', patch: { devEui: '0000000000000000' }, match: /all zeros/i },
