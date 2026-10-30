@@ -65,6 +65,9 @@ svg.ico { width: 16px; height: 16px; flex: none; }
 .chip svg { color: var(--st, var(--ink-2)); }
 .btn { height: 30px; padding: 0 12px; border: 1px solid var(--rule-2); background: var(--surface); border-radius: 8px; cursor: pointer; font-size: 12.5px; display: inline-flex; align-items: center; gap: 6px; }
 .btn:hover { background: var(--hover); }
+.btn.primary { background: var(--s1); color: #fff; border-color: var(--s1); font-weight: 600; }
+.btn.primary:hover { background: var(--s1); filter: brightness(1.1); }
+.btn.btn-sm { height: 28px; min-height: 28px; padding: 0 10px; font-size: 12px; margin-top: 8px; }
 .btn.icon { width: 30px; padding: 0; justify-content: center; }
 
 /* headline */
@@ -274,6 +277,9 @@ dialog pre { margin: 0; padding: 16px 18px; overflow: auto; max-height: calc(100
 .cfg-alert { margin: 12px 0; padding: 10px 12px; border-radius: 8px; border: 1px solid var(--rule-2); background: var(--hover); font-size: 12.5px; color: var(--ink-2); }
 .cfg-alert.warn { border-left: 3px solid var(--warn); }
 .cfg-alert.error { border-left: 3px solid var(--crit); }
+#cfgStatus { margin: 0; border-radius: 0; border-left: 4px solid var(--s1); border-right: 0; border-bottom: 0; border-top: 1px solid var(--rule); padding: 10px 22px; background: var(--hover); flex: 0 0 auto; font-weight: 500; color: var(--ink); }
+#cfgStatus.warn { border-left-color: var(--warn); }
+#cfgStatus.error { border-left-color: var(--crit); }
 .cfg-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 14px 22px; border-top: 1px solid var(--rule); background: var(--surface); }
 .cfg-actions .spacer { flex: 1; }
 @media (max-width: 640px) {
@@ -526,7 +532,7 @@ button, .btn, select { min-height: 40px; }
       <div class="cfg-review-grid" id="cfgReview"></div>
       <div class="cfg-alert info">The generated .ino uses the stationary ECOWAN NodeCore v2.4 (WLAN .bin OTA, SX1262 init with 5s settle delay, OTAA + Preferences session persistence, DeviceTime UTC slot scheduler, and EMF1 v1 on FPort 10). Replace any all-zero OTAA key placeholders before flashing.</div>
     </section>
-    <div class="cfg-alert" id="cfgStatus" role="status" aria-live="polite">Ready.</div>
+    <div class="cfg-alert" id="cfgStatus" role="status" aria-live="polite" style="position:sticky;bottom:0;z-index:3;margin-top:16px">Ready.</div>
   </div>
   <div class="cfg-actions">
     <button class="btn" id="cfgBack" type="button" disabled>Back</button>
@@ -534,7 +540,7 @@ button, .btn, select { min-height: 40px; }
     <button class="btn primary" id="cfgSave" type="button">Save Configuration</button>
     <span class="spacer"></span>
     <button class="btn cfg-final-action" id="cfgGenerate" type="button" hidden>Download Code</button>
-    <button class="btn cfg-final-action" id="cfgCompile" type="button" hidden>Compile &amp; Download .bin</button>
+    <button class="btn primary cfg-final-action" id="cfgCompile" type="button" hidden>Compile &amp; Download .bin</button>
     <button class="btn cfg-final-action" id="cfgExport" type="button" hidden>Download JSON</button>
     <button class="btn cfg-final-action" id="cfgBundle" type="button" hidden>Download Field Bundle</button>
     <button class="btn" id="cfgCloseBottom" type="button">Close</button>
@@ -785,6 +791,7 @@ var NODE_TPL =
     '<div class="nm"><i class="sw"></i><h3 data-k="name"></h3></div>' +
     '<div class="st"><svg class="ico" aria-hidden="true"><use href="#i-wait"/></svg><span data-k="status"></span><span class="age" data-k="age"></span></div>' +
     '<div class="eui"><span data-k="eui"></span><button class="mini" type="button" data-act="copy" aria-label="Copy device EUI"><svg class="ico"><use href="#i-copy"/></svg></button></div>' +
+    '<div><button class="btn btn-sm" type="button" data-act="configure">Configure node</button></div>' +
   '</div>' +
   '<div class="reads">' +
     '<div class="read"><div class="lbl">Temperature</div><div class="val"><span data-k="t"></span><i>' + DEG + 'C</i></div><div class="delta" data-k="dt"></div></div>' +
@@ -2107,7 +2114,7 @@ function cfgRenderCatalogReference() {
   if (!matches.length) listHost.appendChild(el('div', 'cfg-sub', 'No catalogue entries match this search.'));
 }
 
-function cfgOpenWizard() {
+function cfgOpenWizard(targetEui) { var initialEui = (typeof targetEui === 'string' && targetEui) ? targetEui : null;
   var dlg = $('#cfgDlg');
   cfgSetStep(0);
   if (!CFG.catalog) {
@@ -2120,13 +2127,15 @@ function cfgOpenWizard() {
       setText($('#cfgCatalogBadge'), 'Parts ' + (CFG.catalog.parts || []).length + ' · v' + (CFG.catalog.catalogVersion || 'available'));
       cfgRenderCatalogReference();
       cfgFillExistingList();
-      cfgLoadNode($('#cfgExistingNode').value || '__new');
+      if (initialEui && $('#cfgExistingNode')) $('#cfgExistingNode').value = initialEui;
+      cfgLoadNode(initialEui || $('#cfgExistingNode').value || '__new');
       if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', 'open');
     }).catch(function (err) { cfgSetStatus('Could not load configuration catalogue: ' + err.message, 'error'); if (dlg.showModal) dlg.showModal(); });
   } else {
     cfgFillExistingList();
     if (dlg.showModal) dlg.showModal(); else dlg.setAttribute('open', 'open');
-    cfgLoadNode($('#cfgExistingNode').value || '__new');
+    if (initialEui && $('#cfgExistingNode')) $('#cfgExistingNode').value = initialEui;
+    cfgLoadNode(initialEui || $('#cfgExistingNode').value || '__new');
   }
 }
 function cfgSetStep(step) {
@@ -3286,6 +3295,8 @@ function wire() {
       copyText(eui, function () { var u = b.querySelector('use'); u.setAttribute('href', '#i-check'); setTimeout(function () { u.setAttribute('href', '#i-copy'); }, 1200); });
     } else if (b.getAttribute('data-act') === 'raw') {
       openRaw(eui, K(root, 'name').textContent);
+    } else if (b.getAttribute('data-act') === 'configure') {
+      cfgOpenWizard(eui);
     }
   });
   $('#nodes').addEventListener('toggle', function () { if (S.state) renderNodes(S.state, serverNow()); }, true);
