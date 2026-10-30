@@ -102,6 +102,32 @@ KNOWN_NODES = {
     "b1e299ff3eed5d1d": "ENode2",
 }
 
+KNOWN_NODE_DEFAULTS = {
+    "d251f42dc4918f96": {
+        "joinEui": "827b193dd87983cf",
+        "nwkKey": "970dd38bd89c7accb2dba04d1a429421",
+        "appKey": "970dd38bd89c7accb2dba04d1a429421",
+        "otaApSsid": "ECOWAN-ENode1",
+        "otaApPassword": "ecowan-maintenance-ota",
+        "utcSlotSecond": 5,
+    },
+    "b1e299ff3eed5d1d": {
+        "joinEui": "6bbf280ebd665410",
+        "nwkKey": "cd1dd7a9b06c626c69b463e2c1c94cbb",
+        "appKey": "cd1dd7a9b06c626c69b463e2c1c94cbb",
+        "otaApSsid": "ECOWAN-ENode2",
+        "otaApPassword": "ecowan-maintenance-ota",
+        "utcSlotSecond": 35,
+    },
+}
+
+CHIRPSTACK_REST_URL = os.environ.get("DASH_CS_REST_URL", "http://127.0.0.1:8090").rstrip("/")
+CHIRPSTACK_TOKEN_FILE = Path(os.environ.get("DASH_CS_TOKEN_FILE", "/root/.edge-monitor-cs-token"))
+CHIRPSTACK_DEFAULT_APP_ID = os.environ.get("DASH_CS_APP_ID", "51cb9ad2-c351-4067-8baf-247555359e53")
+CHIRPSTACK_DEFAULT_PROFILE_ID = os.environ.get("DASH_CS_PROFILE_ID", "dce4f2d0-8742-4a2a-aec3-fd69e8bdd658")
+_CS_TOKEN_CACHE: str = ""
+_GW_RADIO_CACHE: dict = {"ts": 0.0, "data": None}
+
 LOCK = threading.RLock()
 STOP = threading.Event()
 PROCESS_STARTED = time.time()
@@ -283,6 +309,10 @@ def load_config_store() -> dict[str, dict]:
         for eui, config in configs.items():
             normalized = str(eui).lower().replace(":", "").replace("-", "").strip()
             if re.fullmatch(r"[0-9a-f]{16}", normalized) and isinstance(config, dict):
+                ref = KNOWN_NODE_DEFAULTS.get(normalized, {})
+                for k, v in ref.items():
+                    if not config.get(k) and config.get(k) != 0:
+                        config[k] = v
                 out[normalized] = config
         return out
     except FileNotFoundError:
@@ -309,12 +339,13 @@ def config_error(message: str):
 
 
 def validate_node_config(doc: dict, catalog: dict) -> dict:
-    """Validate and normalize a node's saved sensor map before persisting it."""
+    """Validate and normalize a node's saved sensor map and OTAA/OTA identity before persisting it."""
     if not isinstance(doc, dict):
         config_error("Expected a JSON object")
     eui = str(doc.get("devEui") or doc.get("eui") or "").lower().replace(":", "").replace("-", "").strip()
     if not re.fullmatch(r"[0-9a-f]{16}", eui):
         config_error("DevEUI must be exactly 16 hexadecimal characters")
+    ref = KNOWN_NODE_DEFAULTS.get(eui, {})
     name = str(doc.get("name") or f"Node {eui[-4:]}").strip()[:80]
     if not name:
         config_error("Node name is required")
@@ -326,6 +357,31 @@ def validate_node_config(doc: dict, catalog: dict) -> dict:
         config_error("Reporting interval must be a whole number of seconds")
     if interval < 10 or interval > 86400:
         config_error("Reporting interval must be between 10 and 86400 seconds")
+    raw_join = str(doc.get("joinEui") if doc.get("joinEui") is not None else (ref.get("joinEui") or "0000000000000000")).lower().replace(":", "").replace("-", "").replace(" ", "").strip()
+    join_eui = raw_join if raw_join else "0000000000000000"
+    if not re.fullmatch(r"[0-9a-f]{16}", join_eui):
+        config_error("JoinEUI must be 16 hexadecimal characters")
+    nwk_key = str(doc.get("nwkKey") if doc.get("nwkKey") is not None else (ref.get("nwkKey") or "")).lower().replace(":", "").replace("-", "").replace(" ", "").strip()
+    app_key = str(doc.get("appKey") if doc.get("appKey") is not None else (ref.get("appKey") or "")).lower().replace(":", "").replace("-", "").replace(" ", "").strip()
+    if nwk_key and not app_key:
+        app_key = nwk_key
+    elif app_key and not nwk_key:
+        nwk_key = app_key
+    if nwk_key and not re.fullmatch(r"[0-9a-f]{32}", nwk_key):
+        config_error("NwkKey must be 32 hexadecimal characters (16 bytes)")
+    if app_key and not re.fullmatch(r"[0-9a-f]{32}", app_key):
+        config_error("AppKey must be 32 hexadecimal characters (16 bytes)")
+    default_ssid = ref.get("otaApSsid") or f"ECOWAN-{re.sub(r'[^A-Za-z0-9_-]+', '', name)[:24] or eui[-4:]}"
+    ota_ssid = str(doc.get("otaApSsid") or doc.get("otaSsid") or default_ssid).strip()[:32]
+    ota_pass = str(doc.get("otaApPassword") or doc.get("otaPassword") or ref.get("otaApPassword") or "ecowan-maintenance-ota").strip()[:63]
+    if len(ota_pass) < 8:
+        config_error("WLAN OTA AP Password must be at least 8 characters")
+    try:
+        raw_slot = doc.get("utcSlotSecond")
+        utc_slot = int(raw_slot) if raw_slot not in (None, "") else int(ref.get("utcSlotSecond", 5))
+    except (ValueError, TypeError, OverflowError):
+        utc_slot = int(ref.get("utcSlotSecond", 5))
+    utc_slot = max(0, min(interval - 1, utc_slot))
     profile = str(doc.get("firmwareProfile") or "esp32_lorawan").strip()[:80]
     requested_codec = str(doc.get("payloadCodec") or "edge_measurement_v1").strip()
     if requested_codec != "edge_measurement_v1":
@@ -402,6 +458,12 @@ def validate_node_config(doc: dict, catalog: dict) -> dict:
     return {
         "schemaVersion": CONFIG_SCHEMA_VERSION,
         "devEui": eui,
+        "joinEui": join_eui,
+        "nwkKey": nwk_key,
+        "appKey": app_key,
+        "otaApSsid": ota_ssid,
+        "otaApPassword": ota_pass,
+        "utcSlotSecond": utc_slot,
         "name": name,
         "placement": placement,
         "reportingIntervalSeconds": interval,
@@ -416,6 +478,254 @@ def validate_node_config(doc: dict, catalog: dict) -> dict:
         "updatedAt": now,
         "catalogVersion": str(catalog.get("catalogVersion") or "unknown"),
     }
+
+
+def cs_get_or_create_token() -> str:
+    """Return a cached or auto-generated ChirpStack v4 local REST API token."""
+    global _CS_TOKEN_CACHE
+    if _CS_TOKEN_CACHE:
+        return _CS_TOKEN_CACHE
+    env_tok = os.environ.get("DASH_CS_API_TOKEN", "").strip()
+    if env_tok:
+        _CS_TOKEN_CACHE = env_tok
+        return _CS_TOKEN_CACHE
+    try:
+        if CHIRPSTACK_TOKEN_FILE.exists():
+            tok = CHIRPSTACK_TOKEN_FILE.read_text(encoding="utf-8").strip()
+            if tok:
+                _CS_TOKEN_CACHE = tok
+                return _CS_TOKEN_CACHE
+    except Exception:
+        pass
+    for cmd in (
+        ["docker", "exec", "chirpstack_chirpstack_1", "chirpstack", "-c", "/etc/chirpstack", "create-api-key", "--name", "edge-monitor-auto"],
+        ["chirpstack", "-c", "/etc/chirpstack", "create-api-key", "--name", "edge-monitor-auto"],
+    ):
+        try:
+            res = subprocess.run(cmd, capture_output=True, text=True, timeout=6)
+            if res.returncode == 0 and res.stdout:
+                m = re.search(r"token:\s*(\S+)", res.stdout)
+                if m:
+                    tok = m.group(1).strip()
+                    _CS_TOKEN_CACHE = tok
+                    try:
+                        CHIRPSTACK_TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+                        CHIRPSTACK_TOKEN_FILE.write_text(tok + "\n", encoding="utf-8")
+                        os.chmod(CHIRPSTACK_TOKEN_FILE, 0o600)
+                    except Exception:
+                        pass
+                    return _CS_TOKEN_CACHE
+        except Exception:
+            continue
+    return ""
+
+
+def cs_api_request(method: str, path: str, body: dict | None = None, timeout: float = 5.0) -> tuple[int, dict]:
+    """Perform a request against the local ChirpStack v4 REST API (127.0.0.1:8090)."""
+    token = cs_get_or_create_token()
+    if not token:
+        return 0, {"error": "ChirpStack API token unavailable"}
+    url = f"{CHIRPSTACK_REST_URL}{path}"
+    data = json.dumps(body).encode("utf-8") if body is not None else None
+    headers = {
+        "Accept": "application/json",
+        "Grpc-Metadata-Authorization": f"Bearer {token}",
+    }
+    if data is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method=method.upper())
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8", errors="replace")
+            return resp.status, (json.loads(raw) if raw.strip() else {})
+    except urllib.error.HTTPError as exc:
+        try:
+            raw = exc.read().decode("utf-8", errors="replace")
+            return exc.code, (json.loads(raw) if raw.strip() else {"error": f"HTTP {exc.code}"})
+        except Exception:
+            return exc.code, {"error": f"HTTP {exc.code}"}
+    except Exception as exc:
+        return 0, {"error": str(exc)}
+
+
+def cs_resolve_ids() -> tuple[str, str]:
+    """Return (applicationId, deviceProfileId) for provisioning nodes in ChirpStack."""
+    app_id = CHIRPSTACK_DEFAULT_APP_ID
+    prof_id = CHIRPSTACK_DEFAULT_PROFILE_ID
+    status, tenants = cs_api_request("GET", "/api/tenants?limit=5")
+    tenant_id = "52f14cd4-c6f1-4fbd-8f87-4025e1d49242"
+    if status == 200 and isinstance(tenants.get("result"), list) and tenants["result"]:
+        tenant_id = str(tenants["result"][0].get("id") or tenant_id)
+    status_a, apps = cs_api_request("GET", f"/api/applications?limit=10&tenantId={tenant_id}")
+    if status_a == 200 and isinstance(apps.get("result"), list) and apps["result"]:
+        app_id = str(apps["result"][0].get("id") or app_id)
+    status_p, profs = cs_api_request("GET", f"/api/device-profiles?limit=10&tenantId={tenant_id}")
+    if status_p == 200 and isinstance(profs.get("result"), list) and profs["result"]:
+        prof_id = str(profs["result"][0].get("id") or prof_id)
+    return app_id, prof_id
+
+
+def chirpstack_sync_device(cfg: dict) -> dict:
+    """Automatically create or update the device and its OTAA keys in ChirpStack."""
+    eui = str(cfg.get("devEui") or "").lower().strip()
+    if not re.fullmatch(r"[0-9a-f]{16}", eui):
+        return {"ok": False, "error": "Invalid DevEUI"}
+    status_get, existing = cs_api_request("GET", f"/api/devices/{eui}")
+    if status_get == 0:
+        return {"ok": False, "skipped": True, "reason": existing.get("error", "ChirpStack REST API unreachable")}
+    if status_get == 200 and isinstance(existing.get("device"), dict):
+        ex_dev = existing["device"]
+        app_id = str(ex_dev.get("applicationId") or CHIRPSTACK_DEFAULT_APP_ID)
+        prof_id = str(ex_dev.get("deviceProfileId") or CHIRPSTACK_DEFAULT_PROFILE_ID)
+        device_obj = {
+            "applicationId": app_id,
+            "deviceProfileId": prof_id,
+            "devEui": eui,
+            "name": str(cfg.get("name") or ex_dev.get("name") or f"Node {eui[-4:]}"),
+            "description": str(cfg.get("placement") or ex_dev.get("description") or ""),
+            "joinEui": str(cfg.get("joinEui") or ex_dev.get("joinEui") or "0000000000000000"),
+            "isDisabled": False,
+            "skipFcntCheck": bool(ex_dev.get("skipFcntCheck", False)),
+            "tags": ex_dev.get("tags") if isinstance(ex_dev.get("tags"), dict) else {},
+            "variables": ex_dev.get("variables") if isinstance(ex_dev.get("variables"), dict) else {},
+        }
+        st_dev, resp_dev = cs_api_request("PUT", f"/api/devices/{eui}", {"device": device_obj})
+        action = "updated"
+    elif status_get == 404:
+        app_id, prof_id = cs_resolve_ids()
+        device_obj = {
+            "applicationId": app_id,
+            "deviceProfileId": prof_id,
+            "devEui": eui,
+            "name": str(cfg.get("name") or f"Node {eui[-4:]}"),
+            "description": str(cfg.get("placement") or ""),
+            "joinEui": str(cfg.get("joinEui") or "0000000000000000"),
+            "isDisabled": False,
+            "skipFcntCheck": False,
+            "tags": {},
+            "variables": {},
+        }
+        st_dev, resp_dev = cs_api_request("POST", "/api/devices", {"device": device_obj})
+        action = "created"
+    else:
+        return {"ok": False, "error": resp_error_text(existing, f"ChirpStack GET device returned HTTP {status_get}")}
+
+    if st_dev not in (200, 201):
+        return {"ok": False, "error": resp_error_text(resp_dev, f"ChirpStack device {action} failed (HTTP {st_dev})")}
+
+    nwk_key = str(cfg.get("nwkKey") or "").lower().strip()
+    app_key = str(cfg.get("appKey") or nwk_key).lower().strip()
+    keys_updated = False
+    if re.fullmatch(r"[0-9a-f]{32}", nwk_key) and nwk_key != ("0" * 32):
+        if not re.fullmatch(r"[0-9a-f]{32}", app_key) or app_key == ("0" * 32):
+            app_key = nwk_key
+        st_kget, _ = cs_api_request("GET", f"/api/devices/{eui}/keys")
+        keys_body = {"deviceKeys": {"devEui": eui, "nwkKey": nwk_key, "appKey": app_key}}
+        if st_kget == 200:
+            st_k, resp_k = cs_api_request("PUT", f"/api/devices/{eui}/keys", keys_body)
+        else:
+            st_k, resp_k = cs_api_request("POST", f"/api/devices/{eui}/keys", keys_body)
+        if st_k in (200, 201):
+            keys_updated = True
+        else:
+            return {"ok": False, "action": action, "error": resp_error_text(resp_k, f"Device {action}, but setting OTAA keys failed (HTTP {st_k})")}
+    return {"ok": True, "action": action, "keysUpdated": keys_updated, "devEui": eui}
+
+
+def resp_error_text(resp: dict, fallback: str) -> str:
+    if isinstance(resp, dict):
+        msg = resp.get("message") or resp.get("error")
+        if msg:
+            return str(msg)
+    return fallback
+
+
+def chirpstack_reset_join(eui: str) -> dict:
+    """Clear stored DevNonces, active session, and downlink queue in ChirpStack so a node can re-join."""
+    eui = str(eui or "").lower().replace(":", "").replace("-", "").strip()
+    if not re.fullmatch(r"[0-9a-f]{16}", eui):
+        return {"ok": False, "error": "DevEUI must be 16 hexadecimal characters"}
+    st_n, resp_n = cs_api_request("DELETE", f"/api/devices/{eui}/dev-nonces")
+    if st_n == 0:
+        return {"ok": False, "error": resp_error_text(resp_n, "ChirpStack REST API unreachable")}
+    if st_n == 404:
+        return {"ok": False, "error": f"Device {eui} is not registered in the gateway radio server yet. Save Configuration first."}
+    st_a, _ = cs_api_request("DELETE", f"/api/devices/{eui}/activation")
+    st_q, _ = cs_api_request("DELETE", f"/api/devices/{eui}/queue")
+    with LOCK:
+        node = STATE["nodes"].get(eui)
+        if node:
+            node["_last_fcnt"] = None
+            node["alert"] = None
+            append_event_locked(
+                eui, "other", "info", utc_now(),
+                {"description": "Reset LoRaWAN join nonces & active session from Edge Monitor"},
+                node, "DASH",
+            )
+            STATE["rev"] += 1
+            persist_locked(force=True)
+    return {
+        "ok": True,
+        "devEui": eui,
+        "noncesCleared": st_n == 200,
+        "sessionFlushed": st_a in (200, 404),
+        "queueFlushed": st_q in (200, 404),
+    }
+
+
+def chirpstack_delete_device(eui: str) -> dict:
+    """Delete a device from ChirpStack and remove it from Edge Monitor."""
+    eui = str(eui or "").lower().replace(":", "").replace("-", "").strip()
+    if not re.fullmatch(r"[0-9a-f]{16}", eui):
+        return {"ok": False, "error": "DevEUI must be 16 hexadecimal characters"}
+    st_del, _ = cs_api_request("DELETE", f"/api/devices/{eui}")
+    return {"ok": True, "devEui": eui, "chirpstackDeleted": st_del in (200, 404)}
+
+
+def get_cached_gateway_radio() -> dict:
+    """Return cached Dragino SX1302 packet forwarder + ChirpStack gateway status."""
+    now = utc_now()
+    if _GW_RADIO_CACHE.get("data") and (now - float(_GW_RADIO_CACHE.get("ts") or 0)) < 10.0:
+        return _GW_RADIO_CACHE["data"]
+    iot_status = ""
+    try:
+        p = Path("/var/iot/status")
+        if p.exists():
+            iot_status = p.read_text(encoding="utf-8", errors="replace").strip()
+    except Exception:
+        pass
+    fwd_running = False
+    try:
+        res = subprocess.run(["ps", "-ef"], capture_output=True, text=True, timeout=2)
+        if res.returncode == 0 and "/usr/bin/fwd" in res.stdout:
+            fwd_running = True
+    except Exception:
+        pass
+    gw_info = {
+        "ok": fwd_running or iot_status.lower() == "online",
+        "gatewayId": "a84041fdfe257d3b",
+        "name": "Dragino-LPS8v2",
+        "region": "AS923",
+        "fwdRunning": fwd_running,
+        "iotStatus": iot_status or ("online" if fwd_running else "unknown"),
+        "csState": "UNKNOWN",
+        "lastSeenTs": 0.0,
+        "csApi": "offline",
+    }
+    st_gw, gws = cs_api_request("GET", "/api/gateways?limit=5", timeout=2.0)
+    if st_gw == 200 and isinstance(gws.get("result"), list):
+        gw_info["csApi"] = "connected"
+        if gws["result"]:
+            g0 = gws["result"][0]
+            gw_info["gatewayId"] = str(g0.get("gatewayId") or gw_info["gatewayId"])
+            gw_info["name"] = str(g0.get("name") or gw_info["name"])
+            gw_info["csState"] = str(g0.get("state") or "ONLINE")
+            if g0.get("lastSeenAt"):
+                gw_info["lastSeenTs"] = parse_time(g0.get("lastSeenAt"), 0.0)
+            gw_info["ok"] = gw_info["ok"] or gw_info["csState"] == "ONLINE"
+    _GW_RADIO_CACHE["ts"] = now
+    _GW_RADIO_CACHE["data"] = gw_info
+    return gw_info
 
 
 STATE = load_state()
@@ -1160,8 +1470,10 @@ class Handler(BaseHTTPRequestHandler):
             self.auth_required_response()
             return
         if path == "/api/state":
+            gw_radio = get_cached_gateway_radio()
             with LOCK:
                 data = snapshot_locked()
+            data["gateway_radio"] = gw_radio
             self.send_json(200, data)
             return
         if path == "/api/catalog":
@@ -1469,7 +1781,8 @@ class Handler(BaseHTTPRequestHandler):
                     STATE["nodes"][eui]["interval"] = cfg["reportingIntervalSeconds"]
                     STATE["rev"] += 1
                     persist_locked(force=True)
-                self.send_json(200, {"ok": True, "config": cfg})
+                cs_sync = chirpstack_sync_device(cfg)
+                self.send_json(200, {"ok": True, "config": cfg, "chirpstack": cs_sync})
             except (json.JSONDecodeError, UnicodeDecodeError):
                 self.send_json(400, {"ok": False, "error": "Invalid JSON"})
             except ValueError as exc:
@@ -1477,6 +1790,48 @@ class Handler(BaseHTTPRequestHandler):
             except Exception as exc:
                 print(f"[config] Save failed: {exc}", flush=True)
                 self.send_json(500, {"ok": False, "error": "Could not save configuration; check dashboard logs"})
+            return
+
+        if parsed.path == "/api/nodes/reset-join":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 16384:
+                    self.send_json(400, {"ok": False, "error": "Invalid request size"})
+                    return
+                doc = json.loads(self.rfile.read(length).decode("utf-8", errors="strict"))
+                eui = str(doc.get("devEui") or doc.get("eui") or "").lower().replace(":", "").replace("-", "").strip()
+                res = chirpstack_reset_join(eui)
+                self.send_json(200 if res.get("ok") else 400, res)
+            except Exception as exc:
+                self.send_json(400, {"ok": False, "error": str(exc)})
+            return
+
+        if parsed.path == "/api/nodes/delete":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                if length <= 0 or length > 16384:
+                    self.send_json(400, {"ok": False, "error": "Invalid request size"})
+                    return
+                doc = json.loads(self.rfile.read(length).decode("utf-8", errors="strict"))
+                eui = str(doc.get("devEui") or doc.get("eui") or "").lower().replace(":", "").replace("-", "").strip()
+                if not re.fullmatch(r"[0-9a-f]{16}", eui):
+                    self.send_json(400, {"ok": False, "error": "DevEUI must be 16 hexadecimal characters"})
+                    return
+                cs_del = chirpstack_delete_device(eui)
+                with LOCK:
+                    NODE_CONFIGS.pop(eui, None)
+                    try:
+                        save_config_store_locked()
+                    except Exception:
+                        pass
+                    STATE["nodes"].pop(eui, None)
+                    STATE["series"].pop(eui, None)
+                    STATE["raw"].pop(eui, None)
+                    STATE["rev"] += 1
+                    persist_locked(force=True)
+                self.send_json(200, {"ok": True, "devEui": eui, "chirpstack": cs_del})
+            except Exception as exc:
+                self.send_json(400, {"ok": False, "error": str(exc)})
             return
         if parsed.path == "/api/clear":
             clear_history()

@@ -49,7 +49,7 @@ sandbox.window = sandbox;
 // Expose internal codegen functions from the IIFE for unit testing
 const instrumentedScript = mainScript.replace(
   /bootstrapAuth\(\);\s*\}\)\(\);/,
-  'window.__codegenTestApi = { CFG, CFG_BOARD_PROFILES, CFG_REFERENCE_NODES, cfgNormalizePayload, cfgConfigFingerprint, cfgValidate, cfgInspectSensorIssues, cfgBuildCodecFields, cfgBuildFieldPackage, cfgOtaCorePrefix, cfgGeneratedEmf1Application, cfgAssembledSketchSource, cfgSketchName };\n})();'
+  'window.__codegenTestApi = { CFG, CFG_BOARD_PROFILES, CFG_REFERENCE_NODES, cfgRandomHex, cfgNextFreeSlotSecond, cfgNormalizePayload, cfgConfigFingerprint, cfgValidate, cfgInspectSensorIssues, cfgBuildCodecFields, cfgBuildFieldPackage, cfgOtaCorePrefix, cfgGeneratedEmf1Application, cfgAssembledSketchSource, cfgSketchName };\n})();'
 );
 
 vm.runInNewContext(instrumentedScript, sandbox, { filename: 'index.html', timeout: 5000 });
@@ -187,6 +187,13 @@ assert.ok(!lightAOSource.includes('pinMode(SENSOR_3_AO_PIN'), 'Input-only GPIO35
 assert.ok(lightAOSource.includes('analogRead(SENSOR_3_AO_PIN)'), 'AO pin must be read with analogRead');
 assert.ok(lightAOSource.includes('emfAddValue('), 'AO raw ADC must be encoded into EMF1');
 assert.ok(!lightAOSource.includes('TODO driver binding'), 'No TODO bindings should remain');
+
+// 4d. Test Zero-Touch Provisioning Helpers (Auto Key Sync, Random Hex, Collision-Free UTC Slot)
+assert.match(api.cfgRandomHex(8), /^[0-9a-f]{16}$/, 'cfgRandomHex(8) must generate 16 hex chars');
+assert.match(api.cfgRandomHex(16), /^[0-9a-f]{32}$/, 'cfgRandomHex(16) must generate 32 hex chars');
+assert.strictEqual(api.cfgNextFreeSlotSecond(60, null), 20, 'Next free UTC slot after ENode1(5s) and ENode2(35s) must be 20s');
+const singleKeyNorm = api.cfgNormalizePayload(Object.assign({}, enode1Profile, { nwkKey: '11223344556677889900aabbccddeeff', appKey: '' }));
+assert.strictEqual(singleKeyNorm.appKey, '11223344556677889900aabbccddeeff', 'Empty appKey must automatically mirror nwkKey for LoRaWAN 1.0.3 simplicity');
 
 // 5. Test Invalid Configuration Rejections
 const invalidCases = [

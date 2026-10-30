@@ -498,7 +498,8 @@ button, .btn, select { min-height: 40px; }
     <div class="cfg-alert">Core-First v2.4 workflow: Stationary WLAN .bin OTA, SX1262 LoRaWAN OTAA (with 5s radio settle delay &amp; NVS session persistence), UTC slot collision-avoidance scheduler, and EMF1 v1 (FPort 10) are built into the mandatory NodeCore. Attach node identity, keys, and UTC slot below; sensor modules are optional.</div>
     <div class="cfg-stepper" aria-label="Setup progress"><span class="cfg-stepper-label" id="cfgStepLabel">Step 1 of 3 · Node &amp; UTC Slot</span><div class="cfg-progress"><i id="cfgProgress"></i></div></div>
     <section class="cfg-step" data-step="0" aria-labelledby="cfgNodeStepTitle">
-      <div class="cfg-section-title"><h3 id="cfgNodeStepTitle">1 · Identify &amp; provision the node</h3><p>Set OTAA identity/keys, WLAN OTA credentials, reporting interval, and UTC transmission slot second.</p></div>
+      <div class="cfg-section-title"><h3 id="cfgNodeStepTitle">1 · Identify &amp; provision the node</h3><p>Set OTAA identity/keys, WLAN OTA credentials, reporting interval, and UTC transmission slot second. Saving automatically provisions the gateway radio server (no ChirpStack login needed).</p></div>
+      <div class="cfg-quickbar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center"><button class="btn btn-sm" id="cfgBtnGenAll" type="button">Generate New EUI &amp; Keys</button><button class="btn btn-sm" id="cfgBtnGenKeys" type="button">Generate New OTAA Key</button><button class="btn btn-sm" id="cfgBtnResetJoin" type="button" hidden>Reset LoRaWAN Join / Nonces</button><button class="btn btn-sm" id="cfgBtnDeleteNode" type="button" style="color:var(--bad);border-color:var(--bad)" hidden>Delete Node</button></div>
       <div class="cfg-grid">
         <div class="cfg-field"><label for="cfgExistingNode">Existing node / new node</label><select id="cfgExistingNode"><option value="__new">New node configuration</option></select></div>
         <div class="cfg-field"><label for="cfgName">Node name</label><input id="cfgName" maxlength="80" placeholder="e.g. ENODE1"></div>
@@ -1399,7 +1400,7 @@ function renderEvents(st) {
 }
 
 /* ---------- diagnostics ---------- */
-var DIAG = [['dash', 'Dashboard'], ['mqtt', 'MQTT'], ['msgs', 'Messages'], ['http', 'HTTP'], ['rej', 'Rejected'], ['clock', 'Clock'], ['save', 'Saved'], ['url', 'HTTP endpoint']];
+var DIAG = [['dash', 'Dashboard'], ['gw', 'Gateway radio'], ['mqtt', 'MQTT'], ['msgs', 'Messages'], ['http', 'HTTP'], ['rej', 'Rejected'], ['clock', 'Clock'], ['save', 'Saved'], ['url', 'HTTP endpoint']];
 function renderDiag(st, now) {
   var dl = $('#diag');
   if (!dl.firstChild) {
@@ -1421,6 +1422,10 @@ function renderDiag(st, now) {
   }
   var m = st.mqtt, c = st.counts;
   put('dash', 'Version ' + st.version + ', running for ' + dur(now - st.started));
+  var gwr = st.gateway_radio || {};
+  var gwMain = gwr.ok ? ((gwr.name || 'Dragino LPS8v2') + ' · ' + (gwr.region || 'AS923') + ' online') : 'Checking gateway radio…';
+  var gwSub = 'Gateway ID ' + (gwr.gatewayId || 'a84041fdfe257d3b') + (gwr.lastSeenTs ? ', last radio heartbeat ' + rel(now - gwr.lastSeenTs) : '') + (gwr.csApi === 'connected' ? ' · Auto-provisioning active' : '');
+  put('gw', gwMain, gwSub, gwr.ok ? 'online' : 'waiting');
   var ms = m.state === 'connected' ? ['Connected to ' + m.host, 'online'] : (m.state === 'error' ? ['Not connected to ' + m.host, 'offline'] : (m.state === 'off' ? ['Switched off', 'waiting'] : ['Connecting to ' + m.host, 'waiting']));
   put('mqtt', ms[0], (m.error ? 'Last error: ' + m.error + '. ' : '') + 'Topics: ' + m.topics.join(', '), ms[1]);
   put('msgs', thousands(m.msgs) + ' received over MQTT' + (m.last_ts ? ', last ' + rel(now - m.last_ts) : ''), m.last_topic ? 'Last topic: ' + m.last_topic : '');
@@ -2047,23 +2052,66 @@ function cfgFillExistingList() {
   select.value = Array.from(select.options).some(function (o) { return o.value === old; }) ? old : '__new';
 }
 function cfgClearSensors() { $('#cfgSensorRows').textContent = ''; CFG.rowCount = 0; }
+function cfgRandomHex(numBytes) {
+  var out = [];
+  if (typeof Uint8Array !== 'undefined' && window.crypto && window.crypto.getRandomValues) {
+    var b = new Uint8Array(numBytes); window.crypto.getRandomValues(b);
+    for (var i = 0; i < b.length; i++) out.push(b[i].toString(16).padStart(2, '0'));
+  } else {
+    for (var j = 0; j < numBytes; j++) out.push(Math.floor(Math.random() * 256).toString(16).padStart(2, '0'));
+  }
+  return out.join('');
+}
+function cfgNextFreeSlotSecond(intervalSec, excludeEui) {
+  var iv = Math.max(10, Number(intervalSec) || 60);
+  var used = {};
+  Object.keys(CFG_REFERENCE_NODES).forEach(function (k) { if (k !== excludeEui && CFG_REFERENCE_NODES[k].utcSlotSecond != null) used[Number(CFG_REFERENCE_NODES[k].utcSlotSecond) % iv] = true; });
+  Object.keys(CFG.configs || {}).forEach(function (k) { if (k !== excludeEui && CFG.configs[k] && CFG.configs[k].utcSlotSecond != null) used[Number(CFG.configs[k].utcSlotSecond) % iv] = true; });
+  var preferred = [5, 35, 20, 50, 12, 42, 27, 57];
+  for (var i = 0; i < preferred.length; i++) { var s = preferred[i] % iv; if (!used[s]) return s; }
+  for (var c = 5; c < iv; c += 7) { if (!used[c]) return c; }
+  return 5 % iv;
+}
+function cfgGenerateKeysOnly() {
+  var k = cfgRandomHex(16);
+  if ($('#cfgNwkKey')) $('#cfgNwkKey').value = k;
+  if ($('#cfgAppKey')) $('#cfgAppKey').value = k;
+  cfgSetStatus('Generated fresh 128-bit OTAA key (synced across NwkKey & AppKey). Click Save Configuration to provision the gateway.');
+}
+function cfgGenerateAllIdsAndKeys() {
+  var devEui = 'd2' + cfgRandomHex(7);
+  var joinEui = cfgRandomHex(8);
+  var k = cfgRandomHex(16);
+  var iv = $('#cfgInterval') ? Number($('#cfgInterval').value || 60) : 60;
+  var slot = cfgNextFreeSlotSecond(iv, null);
+  if ($('#cfgEui')) $('#cfgEui').value = devEui;
+  if ($('#cfgJoinEui')) $('#cfgJoinEui').value = joinEui;
+  if ($('#cfgNwkKey')) $('#cfgNwkKey').value = k;
+  if ($('#cfgAppKey')) $('#cfgAppKey').value = k;
+  if ($('#cfgUtcSlotSecond')) $('#cfgUtcSlotSecond').value = slot;
+  if ($('#cfgOtaPassword') && (!$('#cfgOtaPassword').value || $('#cfgOtaPassword').value === 'CHANGE_THIS_PASSWORD')) $('#cfgOtaPassword').value = 'ecowan-maintenance-ota';
+  cfgSetStatus('Auto-generated DevEUI (' + devEui + '), JoinEUI, OTAA keys, and collision-free UTC slot (' + slot + 's). Enter a Node Name and click Save Configuration.');
+}
 function cfgLoadNode(eui) {
   var cfg = CFG.configs[eui] || null;
   var ref = CFG_REFERENCE_NODES[eui] || null;
   var node = S.state && S.state.nodes ? S.state.nodes.find(function (n) { return n.eui === eui; }) : null;
   var defaultName = cfg ? cfg.name : (node ? node.name : (ref ? ref.name : ''));
-  var defaultSlot = cfg && cfg.utcSlotSecond != null ? Number(cfg.utcSlotSecond) : (ref ? ref.utcSlotSecond : 5);
-  var defaultJoinEui = cfg && cfg.joinEui ? cfg.joinEui : (ref ? ref.joinEui : '0000000000000000');
+  var isNew = !eui || eui === '__new';
+  var defaultSlot = cfg && cfg.utcSlotSecond != null ? Number(cfg.utcSlotSecond) : (ref ? ref.utcSlotSecond : (isNew ? cfgNextFreeSlotSecond(60, null) : 5));
+  var defaultJoinEui = cfg && cfg.joinEui ? cfg.joinEui : (ref ? ref.joinEui : (isNew ? cfgRandomHex(8) : '0000000000000000'));
+  var autoKey = isNew ? cfgRandomHex(16) : '';
   var defaultSsid = cfg && (cfg.otaApSsid || cfg.otaSsid) ? (cfg.otaApSsid || cfg.otaSsid) : (ref ? ref.otaApSsid : (defaultName ? 'ECOWAN-' + defaultName.replace(/[^A-Za-z0-9_-]+/g, '') : 'ECOWAN-NODE-SET-ME'));
-  var defaultNwkKey = cfg && cfg.nwkKey ? cfg.nwkKey : (ref && ref.nwkKey ? ref.nwkKey : '');
-  var defaultAppKey = cfg && cfg.appKey ? cfg.appKey : (ref && ref.appKey ? ref.appKey : '');
-  if ($('#cfgEui')) $('#cfgEui').value = eui === '__new' ? '' : eui;
+  var defaultNwkKey = cfg && cfg.nwkKey ? cfg.nwkKey : (ref && ref.nwkKey ? ref.nwkKey : autoKey);
+  var defaultAppKey = cfg && cfg.appKey ? cfg.appKey : (ref && ref.appKey ? ref.appKey : (defaultNwkKey || autoKey));
+  if ($('#cfgEui')) $('#cfgEui').value = isNew ? ('d2' + cfgRandomHex(7)) : eui;
   $('#cfgName').value = defaultName;
   if ($('#cfgJoinEui')) $('#cfgJoinEui').value = defaultJoinEui;
   if ($('#cfgNwkKey')) $('#cfgNwkKey').value = defaultNwkKey;
   if ($('#cfgAppKey')) $('#cfgAppKey').value = defaultAppKey;
   if ($('#cfgOtaSsid')) $('#cfgOtaSsid').value = defaultSsid;
-  if ($('#cfgOtaPassword')) $('#cfgOtaPassword').value = cfg && (cfg.otaApPassword || cfg.otaPassword) ? (cfg.otaApPassword || cfg.otaPassword) : (defaultName ? 'ECOWAN-' + defaultName.replace(/[^A-Za-z0-9_-]+/g, '') : 'CHANGE_THIS_PASSWORD');
+  if ($('#cfgOtaPassword')) $('#cfgOtaPassword').value = cfg && (cfg.otaApPassword || cfg.otaPassword) ? (cfg.otaApPassword || cfg.otaPassword) : (ref && ref.otaApPassword ? ref.otaApPassword : 'ecowan-maintenance-ota');
+  var btnReset = $('#cfgBtnResetJoin'), btnDel = $('#cfgBtnDeleteNode'); if (btnReset) btnReset.hidden = isNew; if (btnDel) btnDel.hidden = isNew;
   $('#cfgInterval').value = cfg ? cfg.reportingIntervalSeconds : (node && node.interval ? Math.round(node.interval) : (ref ? ref.reportingIntervalSeconds : 60));
   if ($('#cfgUtcSlotSecond')) $('#cfgUtcSlotSecond').value = defaultSlot;
   $('#cfgPlacement').value = cfg ? cfg.placement || '' : '';
@@ -2236,6 +2284,7 @@ function cfgNormalizePayload(raw) {
   var joinEui = String(raw.joinEui || '').toLowerCase().replace(/[^0-9a-f]/g, '') || '0000000000000000';
   var nwkKey = String(raw.nwkKey || '').toLowerCase().replace(/[^0-9a-f]/g, '');
   var appKey = String(raw.appKey || '').toLowerCase().replace(/[^0-9a-f]/g, '');
+  if (nwkKey && !appKey) appKey = nwkKey; else if (appKey && !nwkKey) nwkKey = appKey;
   var otaSsid = String(raw.otaApSsid || raw.otaSsid || '').trim() || ('ECOWAN-' + (name || 'Node').replace(/[^A-Za-z0-9_-]+/g, ''));
   var otaPassword = String(raw.otaApPassword || raw.otaPassword || '') || 'CHANGE_THIS_PASSWORD';
   var interval = Number(raw.reportingIntervalSeconds != null ? raw.reportingIntervalSeconds : 60);
@@ -3084,9 +3133,38 @@ function cfgSaveCurrent() {
   cfgPostConfig(payload).then(function (result) {
     CFG.configs[payload.devEui] = result.config; CFG.codecFieldOverrides = result.config.codecFields || [];
     cfgFillExistingList(); $('#cfgExistingNode').value = payload.devEui; cfgLoadNode(payload.devEui);
-    cfgSetStatus('Saved. The node profile and codec field IDs are stored in the dashboard; the physical ESP32 has not been reconfigured yet.');
+    var cs = result.chirpstack || {};
+    var csMsg = cs.ok ? (' & provisioned in gateway LoRaWAN server (' + cs.action + (cs.keysUpdated ? ', OTAA keys synced' : '') + ')') : (cs.error ? ' (Note: ' + cs.error + ')' : '');
+    cfgSetStatus('Saved configuration' + csMsg + '. Ready to compile or download.');
     return pollState();
   }).catch(function (err) { cfgSetStatus('Could not save: ' + err.message, 'error'); });
+}
+function cfgResetJoinCurrent() {
+  var eui = ($('#cfgEui') ? $('#cfgEui').value : '').toLowerCase().replace(/[^0-9a-f]/g, '');
+  if (!/^[0-9a-f]{16}$/.test(eui)) { cfgSetStatus('Enter a valid 16-hex DevEUI first.', 'error'); return; }
+  cfgSetStatus('Clearing LoRaWAN DevNonces & active session on gateway…', 'warn');
+  fetch('api/nodes/reset-join', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ devEui: eui }) })
+    .then(function (r) { return r.json().then(function (b) { if (!r.ok || !b.ok) throw new Error(b.error || ('HTTP ' + r.status)); return b; }); })
+    .then(function () { cfgSetStatus('Reset complete! Cleared DevNonces & active session for ' + eui + ' in the gateway radio server. The node can re-join immediately.'); return pollState(); })
+    .catch(function (err) { cfgSetStatus('Could not reset join state: ' + err.message, 'error'); });
+}
+function cfgDeleteCurrentNode() {
+  var eui = ($('#cfgEui') ? $('#cfgEui').value : '').toLowerCase().replace(/[^0-9a-f]/g, '');
+  var name = ($('#cfgName') ? $('#cfgName').value : '') || eui;
+  if (!/^[0-9a-f]{16}$/.test(eui)) return;
+  if (!window.confirm('Delete node "' + name + '" (' + eui + ') from Edge Monitor and remove its registration from the gateway radio server?')) return;
+  cfgSetStatus('Deleting node…', 'warn');
+  fetch('api/nodes/delete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ devEui: eui }) })
+    .then(function (r) { return r.json().then(function (b) { if (!r.ok || !b.ok) throw new Error(b.error || ('HTTP ' + r.status)); return b; }); })
+    .then(function () {
+      delete CFG.configs[eui];
+      cfgFillExistingList();
+      if ($('#cfgExistingNode')) $('#cfgExistingNode').value = '__new';
+      cfgLoadNode('__new');
+      cfgSetStatus('Deleted node ' + name + ' (' + eui + ') from Edge Monitor and gateway radio server.');
+      return pollState();
+    })
+    .catch(function (err) { cfgSetStatus('Could not delete node: ' + err.message, 'error'); });
 }
 function cfgExportCurrent() {
   var payload;
@@ -3264,6 +3342,22 @@ function wire() {
   $('#cfgCloseTop').addEventListener('click', function () { $('#cfgDlg').close ? $('#cfgDlg').close() : $('#cfgDlg').removeAttribute('open'); });
   $('#cfgCloseBottom').addEventListener('click', function () { $('#cfgDlg').close ? $('#cfgDlg').close() : $('#cfgDlg').removeAttribute('open'); });
   $('#cfgExistingNode').addEventListener('change', function () { cfgLoadNode(this.value); });
+  var btnGenAll = $('#cfgBtnGenAll'); if (btnGenAll) btnGenAll.addEventListener('click', cfgGenerateAllIdsAndKeys);
+  var btnGenKeys = $('#cfgBtnGenKeys'); if (btnGenKeys) btnGenKeys.addEventListener('click', cfgGenerateKeysOnly);
+  var btnResetJoin = $('#cfgBtnResetJoin'); if (btnResetJoin) btnResetJoin.addEventListener('click', cfgResetJoinCurrent);
+  var btnDelNode = $('#cfgBtnDeleteNode'); if (btnDelNode) btnDelNode.addEventListener('click', cfgDeleteCurrentNode);
+  var elName = $('#cfgName'); if (elName) elName.addEventListener('input', function () {
+    var ssidEl = $('#cfgOtaSsid');
+    if (ssidEl && (!ssidEl.value || ssidEl.value === 'ECOWAN-NODE-SET-ME' || ssidEl.value === 'ECOWAN-NewNode')) {
+      var clean = this.value.replace(/[^A-Za-z0-9_-]+/g, '');
+      if (clean) ssidEl.value = 'ECOWAN-' + clean.slice(0, 24);
+    }
+  });
+  var elNwk = $('#cfgNwkKey'); if (elNwk) elNwk.addEventListener('input', function () {
+    var appEl = $('#cfgAppKey');
+    if (appEl && (!appEl.value || appEl.value === this._prevVal)) appEl.value = this.value;
+    this._prevVal = this.value;
+  });
   $('#cfgAddSensor').addEventListener('click', function () { if (!CFG.catalog) return; cfgCreateSensorRow({partId:'dht11'}); cfgUpdateCompatibility(); });
   $('#cfgCatalogSearch').addEventListener('input', cfgRenderCatalogReference);
   $('#cfgSave').addEventListener('click', cfgSaveCurrent);
