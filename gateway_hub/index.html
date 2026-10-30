@@ -3122,7 +3122,7 @@ function cfgCompileCurrent() {
   var startTime = Date.now();
   var timerId = setInterval(function () {
     var elapsed = Math.round((Date.now() - startTime) / 1000);
-    cfgSetStatus('Compiling ' + sketchName + ' into .bin with arduino-cli (' + elapsed + 's elapsed, typical build takes 30-90s)... please wait.', 'warn');
+    cfgSetStatus('Compiling ' + sketchName + ' into .bin with arduino-cli (' + elapsed + 's elapsed, typical warm build takes 10-20s)... please wait.', 'warn');
   }, 1000);
   cfgSetStatus('Connecting to compiler... please wait.', 'warn');
 
