@@ -1,6 +1,7 @@
 # Archive & scratch directories
 _archive/
 .gemini/
+__pycache__/
 
 # Build artifacts & binaries
 *.bin
@@ -14,7 +15,7 @@ build/
 *.zip
 *.tar.gz
 
-# Local environment / secrets
+# Local environment / secrets / untracked docs
 .env
 *.secret
 credentials.h
@@ -24,13 +25,11 @@ secrets.h
 *_Slotted/
 node_configs.json
 edge_monitor_state.json
+*.docx
+*.pdf
 
 # OS / Editor files
 .DS_Store
 Thumbs.db
 .vscode/
 ~$*
-
-__pycache__/
-scratch_edge_dash.py
-*.bin

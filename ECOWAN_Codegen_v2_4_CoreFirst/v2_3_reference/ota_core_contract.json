@@ -1,8 +1,0 @@
-{
-  "contractSchema": "edge-monitor-ota-core-contract-v1",
-  "version": "edge-ota-core-v1",
-  "startMarker": "FIXED WLAN OTA CORE START",
-  "endMarker": "FIXED WLAN OTA CORE END",
-  "blockSha256": "15259a48d69c215a11145d0a2e1ecfba4f202e6b81928108fbf1b65e422ce662",
-  "changePolicy": "The generated source must match this block hash. Any intentional OTA-core change requires a deliberate version increment and updated hash after review and tests."
-}

@@ -1,6 +1,6 @@
 # ECOWAN — Modular Environmental Monitoring AIoT & LoRaWAN Platform
 
-**ECOWAN** is a modular environmental-monitoring platform built around **ESP32 + SX1262 (RA-01SH) LoRaWAN nodes**, a **Dragino LPS8v2 Gateway** running **ChirpStack v4** + **MQTT**, and the **Edge Monitor** web dashboard with an integrated **Core-First Firmware Code Generator (`ECOWAN_Codegen_v2_4_CoreFirst`)**.
+**ECOWAN** is a modular environmental-monitoring platform built around **ESP32 + SX1262 (RA-01SH) LoRaWAN nodes**, a **Dragino LPS8v2 Gateway** running **ChirpStack v4** + **MQTT**, and the **Edge Monitor** web dashboard + server-side firmware codegen hub (`gateway_hub/`).
 
 ---
 
@@ -8,24 +8,25 @@
 
 ```text
 AITA_Sripts/
+├── gateway_hub/                         # Main Hub for all Gateway & Server-Side Services
+│   ├── index.html                       # Edge Monitor Web App + Stationary Core-First Firmware Generator
+│   ├── edge_dash.py                     # Gateway HTTP & MQTT Backend Service (/root/edge_dash.py on Dragino)
+│   ├── compile_bridge.py                # Remote Build Server Arduino-CLI Compiler Bridge (/root/compile_bridge.py on lacave)
+│   ├── parts_catalog.json               # Modular sensor catalog & EMF1 wire-type definitions
+│   ├── ECOWAN_NodeCore_Template.ino     # Stationary NodeCore v2.4 Arduino template (OTA + LoRaWAN + UTC Slots + EMF1)
+│   ├── CODEGEN_CORE_CONTRACT.json       # Stationary core contract specification
+│   ├── test_codegen.js                  # Automated unit test suite for codegen & UI
+│   ├── README.md                        # Gateway & server hub documentation
+│   └── CHANGELOG.md                     # Hub & Codegen v2.4 changelog
 ├── ENODE1/
-│   └── ENODE1.ino                     # Production NodeCore v2.4 firmware for ENODE1 (UTC slot 5s)
+│   ├── ENODE1.ino                       # Production NodeCore v2.4 firmware for ENODE1 (UTC slot 5s)
+│   └── credentials.h.example            # Example node credentials template
 ├── ENODE2/
-│   └── ENODE2.ino                     # Production NodeCore v2.4 firmware for ENODE2 (UTC slot 35s)
-├── ENode1_Slotted/
-│   └── ENode1_Slotted.ino             # Reference Legacy Fixed6 (FPort 1) slotted sketch for ENode1
-├── ENode2_Slotted/
-│   └── ENode2_Slotted.ino             # Reference Legacy Fixed6 (FPort 1) slotted sketch for ENode2
-├── ECOWAN_Codegen_v2_4_CoreFirst/
-│   ├── index.html                     # Edge Monitor Web App + Stationary Core-First Firmware Generator
-│   ├── ECOWAN_NodeCore_Template.ino   # Stationary NodeCore v2.4 Arduino template (OTA + LoRaWAN + UTC Slots + EMF1)
-│   ├── CODEGEN_CORE_CONTRACT.json     # Stationary core contract specification
-│   ├── parts_catalog.json             # Modular sensor catalog & EMF1 wire-type definitions
-│   ├── README.md                      # Codegen v2.4 package notes
-│   └── CHANGELOG.md                   # Codegen v2.4 changelog
-├── parts_catalog.json                 # Root sensor catalog
-├── AGENTS.md                          # Engineering & diagnostic rules for AI/developer collaboration
-└── _archive/                          # Archived legacy prototypes, test sketches, and zip backups (git-ignored)
+│   ├── ENODE2.ino                       # Production NodeCore v2.4 firmware for ENODE2 (UTC slot 35s)
+│   └── credentials.h.example            # Example node credentials template
+├── credentials.h.example                # Shared credentials template
+├── AGENTS.md                            # Engineering & diagnostic rules
+└── README.md                            # Project overview
 ```
 
 ---
@@ -46,32 +47,30 @@ AITA_Sripts/
 | **LoRa `RESET`** | `GPIO27` | SX1262 Hardware Reset |
 | **LoRa `BUSY`** | `GPIO26` | SX1262 Busy Status |
 | **DHT11 Data** | `GPIO4` | 1-Wire Digital Temperature & Humidity (with 2.1s retry on `NAN`) |
-| **HW-038 Soil Moisture `AO`** | `GPIO34` | Input-only `ADC1_CH6` (`12-bit`, `ADC_11db`, 8-sample average; max `3.3V`) |
-| **4-Pin Light Sensor (Optional)** | Configurable | `AO` on ADC1 pin + optional `D0` threshold pin |
+| **HW-038 Soil Moisture `AO`** | `GPIO34` / `GPIO32` | `ADC1` input (`12-bit`, `ADC_11db`, 8-sample average; max `3.3V`) |
+| **4-Pin Light Sensor (Optional)** | Configurable | Dual-dropdown `AO` (ADC1 pin) + optional `DO` threshold pin (Active-LOW) |
 
-### Gateway (`Dragino LPS8v2`)
+### Gateway (`Dragino LPS8v2`) & Build Server (`lacave`)
 - **LoRaWAN Network Server**: ChirpStack v4
 - **MQTT Broker**: `127.0.0.1:1883` (`application/+/device/+/event/+`)
-- **Edge Monitor Service**: `edge-monitor.service` (`/usr/bin/python3 -u /root/edge_dash.py` on port `8026`, health check at `/healthz`)
+- **Edge Monitor Service**: `edge-monitor.service` (`/usr/bin/python3 -u /root/edge_dash.py` on port `8026`, Tailscale HTTPS on port `8443`)
+- **Build Server**: `compile-bridge.service` (`/usr/bin/python3 -u /root/compile_bridge.py` on `lacave:8027` with persistent build cache)
 
 ---
 
 ## 3. Stationary NodeCore v2.4 & Uplink Reliability
 
-Every ECOWAN node sketch (`ENODE1.ino`, `ENODE2.ino`, and sketches generated by `ECOWAN_Codegen_v2_4_CoreFirst`) shares an immutable **NodeCore v2.4** foundation:
+Every ECOWAN node sketch (`ENODE1.ino`, `ENODE2.ino`, and sketches generated via `gateway_hub/index.html`) shares an immutable **NodeCore v2.4** foundation:
 
 1. **5-Second Radio Settle Delay (`RADIO_SETUP_DELAY_MS = 5000UL`)**:
-   - After `radio.begin()` and `loraNode.beginOTAA(...)`, the firmware waits **5,000 ms** (with `coreMutex` released so WLAN OTA stays responsive) before calling `activateOTAA()`, allowing the 3.3V rail and SX1262 TCXO/PLL to stabilize.
+   - After `radio.begin()` and `loraNode.beginOTAA(...)`, the firmware waits **5,000 ms** before calling `activateOTAA()`, allowing the 3.3V rail and SX1262 TCXO/PLL to stabilize.
 2. **NVS Session & Nonce Persistence**:
    - Saves RadioLib `nonces` and `session` buffers in ESP32 `Preferences` (`"lorawan"` namespace) so reboots restore the active LoRaWAN session without burning `DevNonce` values or resetting frame counters (`FCnt`).
 3. **UTC Slot Collision Avoidance (`DeviceTimeReq` / `DeviceTimeAns`)**:
    - Requests network UTC time via LoRaWAN MAC command `0x0D` (`DeviceTimeReq`) upon join and every 10 uplinks.
-   - Aligns transmissions to each node's assigned UTC second within the reporting cycle (`ENODE1` = second `5`, `ENODE2` = second `35` in a `60s` period, with a `3000 ms` guard window).
-   - Waits outside `coreMutex` until `1.5 s` before the target slot (`waitForAssignedUplinkSlotInLoop()`), then samples fresh sensor values right before uplink and keeps `coreMutex` unlocked ~96% of every minute.
-   - Enforces a minimum `10 s` backoff on failed/skipped transmissions (`e.g., -1114` dwell-time / duty-cycle check) so `loop()` never busy-spins or inflates `fCntUp`.
+   - Aligns transmissions to each node's assigned UTC second within the reporting cycle (`ENODE1` = second `5`, `ENODE2` = second `35` in a `60s` period).
 4. **Password-Protected WLAN `.bin` OTA (`WebServer` on Port 80)**:
-   - Runs a dedicated FreeRTOS task on Core 0 serving `http://192.168.4.1/` (`/update` accepts `.bin` firmware images).
-   - Serialized via `coreMutex` so flash writes and RadioLib SPI/NVS operations never overlap.
+   - Runs a dedicated FreeRTOS task on Core 0 serving `http://192.168.4.1/` (`/update` accepts `.bin` firmware images) serialized via `coreMutex`.
 
 ---
 
@@ -84,16 +83,13 @@ Every ECOWAN node sketch (`ENODE1.ino`, `ENODE2.ino`, and sketches generated by 
   - `0x03` **Soil Moisture**: type `0x11` (`uint16`, scale `1`, raw 12-bit ADC counts `0..4095`)
   - `0x10` **Core Uptime**: type `0x31` (`uint32`, scale `1`, seconds — emitted automatically in core-only mode)
 - **Missing Sensor Rule**: Failed sensor reads (`NAN`) are omitted from the EMF1 frame rather than encoded as `0`.
-- **Legacy Compatibility**: `FPort 1` (6-byte Fixed6) remains supported as a receive-only format for `ENode1_Slotted` / `ENode2_Slotted`.
 
 ---
 
-## 5. Core-First Web Firmware Generator (`ECOWAN_Codegen_v2_4_CoreFirst`)
+## 5. Verification
 
-Open `ECOWAN_Codegen_v2_4_CoreFirst/index.html` (or deploy to the gateway dashboard) and click **Configure Node**:
-1. Enter the stationary node placeholders:
-   - **Node Name**, **Placement**, **Reporting Interval (`s`)**, and **UTC Slot Second (`0..interval-1`)**
-   - **JoinEUI (16 hex)**, **DevEUI (16 hex)**, **NwkKey (32 hex)**, **AppKey (32 hex)**
-   - **WLAN OTA AP SSID** and **WPA2 Password (8..63 chars)**
-2. *(Optional)* Add modular sensors from the catalog (`DHT11`, `HW-038 Soil Moisture`, `4-Pin Light Sensor`, or RS485/I2C/UART expansion modules per the ECOWAN multi-tier vision).
-3. Click **Download Core-First .ino** to generate a single, self-contained Arduino `.ino` sketch containing the stationary NodeCore v2.4 + your node's credentials/UTC slot + any selected sensors.
+Run the automated codegen & UI unit test suite from the repository root:
+
+```bash
+node gateway_hub/test_codegen.js
+```
