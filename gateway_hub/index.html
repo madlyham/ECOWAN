@@ -485,6 +485,7 @@ button, .btn, select { min-height: 40px; }
   <header>
     <h2 id="cfgTitle">Node configuration wizard</h2>
     <span class="chip" id="cfgCatalogBadge">Catalogue loading…</span>
+    <button class="btn primary" id="cfgSaveTop" type="button">Save Configuration</button>
     <button class="btn" id="cfgCloseTop" type="button">Close</button>
   </header>
   <div class="cfgbody">
@@ -530,12 +531,12 @@ button, .btn, select { min-height: 40px; }
   <div class="cfg-actions">
     <button class="btn" id="cfgBack" type="button" disabled>Back</button>
     <button class="btn" id="cfgNext" type="button">Next</button>
+    <button class="btn primary" id="cfgSave" type="button">Save Configuration</button>
     <span class="spacer"></span>
-    <button class="btn cfg-final-action" id="cfgExport" type="button" hidden>Download JSON</button>
-    <button class="btn cfg-final-action" id="cfgGenerate" type="button" hidden>Download Core-First .ino</button>
+    <button class="btn cfg-final-action" id="cfgGenerate" type="button" hidden>Download Code</button>
     <button class="btn cfg-final-action" id="cfgCompile" type="button" hidden>Compile &amp; Download .bin</button>
-    <button class="btn cfg-final-action" id="cfgBundle" type="button" hidden>Download field bundle</button>
-    <button class="btn cfg-final-action" id="cfgSave" type="button" hidden>Save configuration</button>
+    <button class="btn cfg-final-action" id="cfgExport" type="button" hidden>Download JSON</button>
+    <button class="btn cfg-final-action" id="cfgBundle" type="button" hidden>Download Field Bundle</button>
     <button class="btn" id="cfgCloseBottom" type="button">Close</button>
   </div>
 </dialog>
@@ -1514,6 +1515,37 @@ function cfgPortsForProtocol(protocolId) {
   var list = profiles[protocolId] || profiles.custom || [{ id: 'CUSTOM_PORT', label: 'User-defined interface' }];
   return list.map(function (port) { return { value: port.id, label: port.label }; });
 }
+function cfgResolveAvailableWireType(preferredCode, occupied, currentVal) {
+  var code = Number(preferredCode);
+  var strCurrent = currentVal != null ? String(currentVal) : null;
+  if (!occupied[String(code)] || String(code) === strCurrent) {
+    return code;
+  }
+  // Compatible pools in order of preference (find next available slot automatically):
+  var pool;
+  if (code === 0x11 || code === 0x31) {
+    pool = [0x11, 0x31, 0x12, 0x32];
+  } else if (code === 0x12 || code === 0x32) {
+    pool = [0x12, 0x32, 0x11, 0x31];
+  } else if (code === 0x24 || code === 0x23) {
+    pool = [0x24, 0x23, 0x21, 0x22];
+  } else if (code === 0x21 || code === 0x22) {
+    pool = [0x21, 0x22, 0x24, 0x23];
+  } else if (code === 0x01) {
+    pool = [0x01];
+  } else {
+    pool = [code, 0x31, 0x32, 0x11, 0x12];
+  }
+  for (var i = 0; i < pool.length; i++) {
+    var c = pool[i];
+    if (!occupied[String(c)] || String(c) === strCurrent) return c;
+  }
+  for (var j = 0; j < CFG_WIRE_TYPES.length; j++) {
+    var anyCode = CFG_WIRE_TYPES[j].code;
+    if (!occupied[String(anyCode)] || String(anyCode) === strCurrent) return anyCode;
+  }
+  return code;
+}
 function cfgGetOccupiedWireTypes(excludeSelect) {
   var occupied = {};
   var rows = document.querySelectorAll('#cfgSensorRows [data-cfg-row]');
@@ -1557,17 +1589,19 @@ function cfgRenderFieldList(host, fields) {
     var defaultType = field.wireType != null ? Number(field.wireType) : (known ? Number(known.typeCode) : cfgInferWireType(field.key, field.unit));
     var wireType = el('select');
     wireType.setAttribute('data-fieldpart', 'wireType');
+    var wireSub = el('div', 'cfg-sub');
 
     function refreshWireOptions() {
       var occupied = cfgGetOccupiedWireTypes(wireType);
-      var current = wireType.value || String(defaultType);
       var def = CFG_FIELD_DEFS[String(key.value || '').trim()];
       var isFixedRegistry = !!def;
+      var baseType = field.wireType != null ? Number(field.wireType) : (def ? Number(def.typeCode) : cfgInferWireType(key.value, unit.value));
+      var resolvedType = isFixedRegistry ? baseType : cfgResolveAvailableWireType(baseType, occupied, wireType.value);
 
       wireType.textContent = '';
       CFG_WIRE_TYPES.forEach(function (t) {
         var codeStr = String(t.code);
-        var isTaken = occupied[codeStr] && codeStr !== current;
+        var isTaken = occupied[codeStr] && codeStr !== String(resolvedType);
         var optLabel = '0x' + t.code.toString(16).toUpperCase().padStart(2, '0') + ' · ' + t.label;
         if (isTaken) optLabel += ' (in use by ' + occupied[codeStr] + ')';
         var opt = el('option', '', optLabel);
@@ -1579,14 +1613,14 @@ function cfgRenderFieldList(host, fields) {
       if (isFixedRegistry) {
         wireType.value = String(def.typeCode);
         wireType.disabled = true;
+        wireSub.textContent = 'Registry slot 0x' + Number(def.typeCode).toString(16).toUpperCase().padStart(2, '0') + ' fixed by EMF1 standard.';
       } else {
         wireType.disabled = false;
-        if (Array.from(wireType.options).some(function (o) { return o.value === current && !o.disabled; })) {
-          wireType.value = current;
+        wireType.value = String(resolvedType);
+        if (resolvedType !== baseType) {
+          wireSub.textContent = 'Auto-assigned slot 0x' + Number(resolvedType).toString(16).toUpperCase().padStart(2, '0') + ' (preferred 0x' + Number(baseType).toString(16).toUpperCase().padStart(2, '0') + ' in use).';
         } else {
-          var firstAvailable = Array.from(wireType.options).find(function (o) { return !o.disabled; });
-          if (firstAvailable) wireType.value = firstAvailable.value;
-          else wireType.value = current;
+          wireSub.textContent = 'Auto-assigned slot 0x' + Number(resolvedType).toString(16).toUpperCase().padStart(2, '0') + ' (ready for transmission).';
         }
       }
     }
@@ -1617,9 +1651,9 @@ function cfgRenderFieldList(host, fields) {
 
     wrap.appendChild(el('label', '', index === 0 ? 'Decoder key' : 'Measurement key'));
     wrap.appendChild(key); wrap.appendChild(label); wrap.appendChild(unit);
-    wrap.appendChild(el('label', '', 'EMF1 wire encoding'));
+    wrap.appendChild(el('label', '', 'EMF1 wire encoding (auto-assigned)'));
     wrap.appendChild(wireType);
-    wrap.appendChild(el('div', 'cfg-sub', known ? 'Common field: ID and wire type are fixed by the EMF1 registry.' : 'Custom field: choose the wire encoding. The driver must convert the engineering value to the selected scale/range.'));
+    wrap.appendChild(wireSub);
     refreshWireOptions();
     syncRegistryType(false);
     if (before) host.insertBefore(wrap, before); else host.appendChild(wrap);
@@ -2106,6 +2140,7 @@ function cfgSetStep(step) {
   $('#cfgBack').disabled = CFG.step === 0;
   $('#cfgNext').hidden = CFG.step === 2;
   Array.prototype.forEach.call(document.querySelectorAll('.cfg-final-action'), function (b) { b.hidden = CFG.step !== 2; });
+    var saveBtn = $('#cfgSave'); if (saveBtn) saveBtn.hidden = false;
   if (CFG.step === 2) cfgRenderReview();
   var body = document.querySelector('.cfgbody'); if (body) body.scrollTop = 0;
 }
@@ -3223,6 +3258,7 @@ function wire() {
   $('#cfgAddSensor').addEventListener('click', function () { if (!CFG.catalog) return; cfgCreateSensorRow({partId:'dht11'}); cfgUpdateCompatibility(); });
   $('#cfgCatalogSearch').addEventListener('input', cfgRenderCatalogReference);
   $('#cfgSave').addEventListener('click', cfgSaveCurrent);
+    var btnSaveTop = $('#cfgSaveTop'); if (btnSaveTop) btnSaveTop.addEventListener('click', cfgSaveCurrent);
   $('#cfgExport').addEventListener('click', cfgExportCurrent);
   $('#cfgGenerate').addEventListener('click', cfgGenerateCurrent);
   var btnCompile = $('#cfgCompile'); if (btnCompile) btnCompile.addEventListener('click', cfgCompileCurrent);
