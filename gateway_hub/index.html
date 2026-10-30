@@ -2241,7 +2241,7 @@ function cfgRenderReview() {
   values.forEach(function (item) { var card = el('div','cfg-review-item'); card.appendChild(el('span','',item[0])); card.appendChild(el('b','',item[1])); host.appendChild(card); });
   var emfNote=el('div','cfg-alert info','Core-First v2.4: Stationary WLAN .bin OTA, SX1262 LoRaWAN OTAA (5s settle delay + NVS persistence), DeviceTime UTC slot scheduler (immediate-TX at slot mark), and EMF1 v1 (FPort 10) are assembled into one sketch.'); host.appendChild(emfNote);
   var deployNote = el('div', 'cfg-alert info');
-  deployNote.innerHTML = '<strong>Deployment Workflow:</strong><br>1. Click <b>Compile &amp; Download .bin</b> (or download .ino to compile locally).<br>2. Connect your Wi-Fi to <b>' + (payload.otaApSsid || 'ECOWAN-node') + '</b> (Password: <code>' + (payload.otaApPassword || 'CHANGE_THIS_PASSWORD') + '</code>).<br>3. Open <a href="http://192.168.4.1/" target="_blank" rel="noopener">http://192.168.4.1/</a> in browser, select the downloaded <code>.bin</code>, and click Upload.';
+  deployNote.innerHTML = '<strong>Deployment Workflow:</strong><br>1. Click <b>Compile &amp; Download .bin</b> (or download .ino to compile locally).<br>2. Connect your Wi-Fi to <b>' + (payload.otaApSsid || 'ECOWAN-node') + '</b> (Password: <code>' + (payload.otaApPassword || 'CHANGE_THIS_PASSWORD') + '</code>).<br>3. Open <a href="http://192.168.4.1/" target="_blank" rel="noopener">http://192.168.4.1/</a> in browser, select the downloaded <code>.bin</code>, and click Upload.<br><em>Fail-Safe Active:</em> Previous working firmware is preserved in the alternate flash partition with automatic self-testing and 1-click web rollback.';
   host.appendChild(deployNote);
   if (!sensors.length) { var note=el('div','cfg-alert info','No optional sensors selected — the generated sketch will transmit the Core Health Uptime field (0x10, uint32 seconds) on its assigned UTC slot.'); host.appendChild(note); }
 }
@@ -2653,6 +2653,7 @@ function cfgOtaCorePrefix(payload) {
     'static volatile bool otaUploadInProgress = false;',
     'static volatile bool otaUploadRejected = false;',
     'static String otaUploadProblem;',
+    'static bool otaHealthConfirmed = false;',
     'static bool radioReady = false;',
     'static bool lorawanJoined = false;',
     'static bool networkTimeValid = false;',
@@ -2671,7 +2672,14 @@ function cfgOtaCorePrefix(payload) {
     '<form method="POST" action="/update" enctype="multipart/form-data">',
     '<input type="file" name="firmware" accept=".bin,application/octet-stream" required>',
     '<button type="submit">Upload firmware</button></form>',
-    '<p>Keep the node powered until the upload finishes and the device restarts.</p></body></html>',
+    '<p style="font-size:0.85rem;color:#555">Keep the node powered until upload completes.</p>',
+    '<hr style="margin:20px 0;border:0;border-top:1px solid #ccc">',
+    '<h3>Fail-Safe: Revert Firmware</h3>',
+    '<p style="font-size:0.85rem;color:#555">Revert immediately to the previous working firmware partition.</p>',
+    '<form method="POST" action="/rollback" onsubmit="return confirm(\'Revert to previous working firmware and restart now?\');">',
+    '<button type="submit" style="background:#dc3545;color:#fff;border:none;padding:8px 16px;border-radius:4px;cursor:pointer;font-weight:600">Revert to Previous Firmware</button>',
+    '</form>',
+    '</body></html>',
     ')OTA";',
     '',
     'static void otaRoot() { otaServer.send_P(200, "text/html; charset=utf-8", OTA_HTML); }',
@@ -2730,6 +2738,19 @@ function cfgOtaCorePrefix(payload) {
     '  otaServer.send(200, "text/plain; charset=utf-8", "Update accepted. Restarting.");',
     '  Serial.println("[OTA] Update accepted; restarting."); delay(500); ESP.restart();',
     '}',
+    'static void otaRollbackHandler() {',
+    '  Serial.println("[OTA] Rollback requested via maintenance portal.");',
+    '  esp_err_t err = esp_ota_mark_app_invalid_rollback_and_reboot();',
+    '  if (err != ESP_OK) {',
+    '    const esp_partition_t* nextPart = esp_ota_get_next_update_partition(nullptr);',
+    '    if (nextPart != nullptr && esp_ota_set_boot_partition(nextPart) == ESP_OK) {',
+    '      otaServer.send(200, "text/plain; charset=utf-8", "Rollback initiated. Switching to alternate firmware slot and restarting...");',
+    '      Serial.printf("[OTA] Alternate partition set to %s. Restarting...\\n", nextPart->label);',
+    '      delay(500); esp_restart(); return;',
+    '    }',
+    '    otaServer.send(400, "text/plain; charset=utf-8", "Rollback not available: no alternate firmware partition found on this device."); return;',
+    '  }',
+    '}',
     'static void otaNotFound() { otaServer.sendHeader("Location", "/", true); otaServer.send(302, "text/plain", "Open maintenance page."); }',
     'static void otaTask(void*) {',
     '  otaServer.begin();',
@@ -2741,6 +2762,7 @@ function cfgOtaCorePrefix(payload) {
     '  if (!WiFi.softAP(OTA_AP_SSID, OTA_AP_PASSWORD)) { Serial.println("[OTA] ERROR: failed to start maintenance AP."); return false; }',
     '  otaServer.on("/", HTTP_GET, otaRoot);',
     '  otaServer.on("/update", HTTP_POST, otaUploadResult, otaUploadStream);',
+    '  otaServer.on("/rollback", HTTP_POST, otaRollbackHandler);',
     '  otaServer.onNotFound(otaNotFound);',
     '  return xTaskCreatePinnedToCore(otaTask, "ota-web", 8192, nullptr, 1, nullptr, 0) == pdPASS;',
     '}',
@@ -3078,6 +3100,11 @@ function cfgGeneratedEmf1Application(payload) {
   lines.push('  persistLoRaWANStateLocked();');
   lines.push('  xSemaphoreGive(coreMutex);');
   lines.push('  hasSentFirstUplink = true;');
+  lines.push('  if (!otaHealthConfirmed) {');
+  lines.push('    esp_ota_mark_app_valid_cancel_rollback();');
+  lines.push('    otaHealthConfirmed = true;');
+  lines.push('    Serial.println("[OTA] Uplink cycle successful; firmware verified healthy, rollback cancelled.");');
+  lines.push('  }');
   lines.push('  if (txState == RADIOLIB_ERR_NONE) Serial.println("[LoRaWAN] Uplink sent; no downlink payload.");');
   lines.push('  else if (txState > 0) Serial.printf("[LoRaWAN] Uplink completed; downlink bytes: %d\\n", txState);');
   lines.push('  else {');
@@ -3089,6 +3116,15 @@ function cfgGeneratedEmf1Application(payload) {
   lines.push('void setup() {');
   lines.push('  Serial.begin(115200); delay(300);');
   lines.push('  Serial.printf("\\n[NodeCore] Booting %s\\n", NODE_NAME);');
+  lines.push('  const esp_partition_t* runningPart = esp_ota_get_running_partition();');
+  lines.push('  esp_ota_img_states_t otaState;');
+  lines.push('  if (esp_ota_get_state_partition(runningPart, &otaState) == ESP_OK) {');
+  lines.push('    if (otaState == ESP_OTA_IMG_PENDING_VERIFY) {');
+  lines.push('      Serial.printf("[OTA] New firmware pending trial verification on %s\\n", runningPart ? runningPart->label : "app");');
+  lines.push('    } else {');
+  lines.push('      Serial.printf("[OTA] Running partition: %s\\n", runningPart ? runningPart->label : "app");');
+  lines.push('    }');
+  lines.push('  }');
   lines.push('  coreMutex = xSemaphoreCreateMutex();');
   lines.push('  if (coreMutex == nullptr) { Serial.println("[Core] FATAL: mutex allocation failed."); while (true) delay(1000); }');
   lines.push('  // Initialize Radio FIRST on clean power rail (matching verified hardware baseline)');
