@@ -4,6 +4,12 @@
 - **Project Name**: ECOWAN (Environmental Monitoring AIoT / LoRaWAN Platform)
 - **Primary Objective**: Reliable, modular environmental-monitoring system using ESP32 + SX1262 LoRaWAN sensor nodes (and future STM32/Wio-E5/PLC/Edge AI expansions per project vision), a Dragino LPS8v2 gateway, ChirpStack v4, MQTT, and the custom Edge Monitor web dashboard + firmware code generator.
 - **Reliability Philosophy**: Preserve working functionality, diagnose root causes across the full pipeline before editing, make small reversible changes one layer at a time, and handle wireless realities (collisions, duty cycle/dwell time, missed downlinks, sensor faults) gracefully without inventing synthetic frames.
+- **KISS Engineering Philosophy ("Keep It Simple, Stupid")**:
+  - **Simplicity Over Cleverness**: Build the simplest solution that completely solves the problem. Never introduce speculative abstractions, convoluted multi-layer indirection, or nested wrappers when direct code does the job cleanly.
+  - **Automate the Cognitive Burden**: If a task can be determined deterministically by code (e.g., auto-assigning next free wire encoding slots, auto-filtering occupied GPIO pins, sensible defaults), do it automatically without burdening the user with technical minutiae.
+  - **Trim the Fat**: Continuously eliminate dead code, unused functions, obsolete legacy folders, and duplicate files. Keep the codebase lean, self-explanatory, and single-purpose.
+  - **Single Source of Truth**: Never maintain duplicate copies of configs, catalogs, or templates across multiple directories. Consolidate into clean hubs (e.g., `gateway_hub/`).
+  - **Direct, Actionable UI/UX**: Avoid hidden buttons and multi-step traps. Primary actions (such as "Save Configuration" and "Download Code") must be immediately visible, direct, and accessible without hunting through sub-menus or steppers.
 
 ## 2. IoT & Node Hardware Constraints
 - **MCU & Radio**: ESP32 + SX1262 / RA-01SH (`RadioLib`, `AS923` region plan).

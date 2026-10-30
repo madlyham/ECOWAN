@@ -31,7 +31,18 @@ AITA_Sripts/
 
 ---
 
-## 2. Hardware Architecture & Pin Map
+## 2. KISS Engineering Philosophy ("Keep It Simple, Stupid")
+
+The entire ECOWAN codebase follows the KISS engineering principle:
+- **Simplicity Over Cleverness**: Build the simplest solution that works reliably. Avoid speculative abstractions and deep indirection.
+- **Automate the Cognitive Burden**: Routine decisions (such as finding available EMF1 wire slots and filtering occupied GPIO pins) are solved automatically in code with zero user effort.
+- **Trim the Fat**: Continuously remove dead code, unused functions, legacy directories, and duplicate files.
+- **Single Source of Truth**: All gateway and server files reside in `gateway_hub/` without redundant root copies.
+- **Direct, Actionable UI**: Essential actions (like "Save Configuration" and "Download Code") remain visible and immediately accessible.
+
+---
+
+## 3. Hardware Architecture & Pin Map
 
 ### Sensor Nodes (`ENODE1`, `ENODE2`, and Generated Nodes)
 - **MCU**: ESP32 (`115200` baud serial monitor)
@@ -58,7 +69,7 @@ AITA_Sripts/
 
 ---
 
-## 3. Stationary NodeCore v2.4 & Uplink Reliability
+## 4. Stationary NodeCore v2.4 & Uplink Reliability
 
 Every ECOWAN node sketch (`ENODE1.ino`, `ENODE2.ino`, and sketches generated via `gateway_hub/index.html`) shares an immutable **NodeCore v2.4** foundation:
 
@@ -74,7 +85,7 @@ Every ECOWAN node sketch (`ENODE1.ino`, `ENODE2.ino`, and sketches generated via
 
 ---
 
-## 4. Payload Codec Standard (`EMF1 v1` on `FPort 10`)
+## 5. Payload Codec Standard (`EMF1 v1` on `FPort 10`)
 
 - **Magic Header**: `0xE1` on **LoRaWAN `FPort 10`**
 - **Record Layout**: `[field_id][type_code][big-endian value]`
@@ -86,7 +97,7 @@ Every ECOWAN node sketch (`ENODE1.ino`, `ENODE2.ino`, and sketches generated via
 
 ---
 
-## 5. Verification
+## 6. Verification
 
 Run the automated codegen & UI unit test suite from the repository root:
 
