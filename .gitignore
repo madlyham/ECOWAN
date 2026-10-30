@@ -27,6 +27,7 @@ node_configs.json
 edge_monitor_state.json
 *.docx
 *.pdf
+AGENTS.md
 
 # OS / Editor files
 .DS_Store

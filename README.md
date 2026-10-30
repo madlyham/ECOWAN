@@ -25,7 +25,6 @@ AITA_Sripts/
 │   ├── ENODE2.ino                       # Production NodeCore v2.4 firmware for ENODE2 (UTC slot 35s)
 │   └── credentials.h.example            # Example node credentials template
 ├── credentials.h.example                # Shared credentials template
-├── AGENTS.md                            # Engineering & diagnostic rules
 └── README.md                            # Project overview
 ```
 
