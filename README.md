@@ -1,105 +1,39 @@
-# ECOWAN — Modular Environmental Monitoring AIoT & LoRaWAN Platform
+# ECOWAN Platform Blueprint
 
-**ECOWAN** is a modular environmental-monitoring platform built around **ESP32 + SX1262 (RA-01SH) LoRaWAN nodes**, a **Dragino LPS8v2 Gateway** running **ChirpStack v4** + **MQTT**, and the **Edge Monitor** web dashboard + server-side firmware codegen hub (`gateway_hub/`).
+## System Overview
+ECOWAN is a modular environmental-monitoring AIoT platform engineered for high reliability, low power consumption, and zero-touch configuration. The architecture integrates ESP32 + Semtech SX1262 (RA-01SH) LoRaWAN sensor nodes, a Dragino LPS8v2 gateway running ChirpStack v4 and MQTT, a remote high-speed Arduino build server (`lacave`), and an integrated Edge Monitor web dashboard featuring automated firmware code generation.
 
----
+The system enforces strict determinism across wireless transmissions via a UTC second-slot scheduler (`DeviceTimeReq`/`DeviceTimeAns`), dual-layer ESP32 OTA firmware rollback fail-safes, and standard Edge Measurement Format v1 (`EMF1`) frames on LoRaWAN FPort 10.
 
-## 1. Repository Layout
+## Local Interface & Invariants
+- `credentials.h.example`: Baseline configuration template defining standard OTAA credential keys (`DEV_EUI`, `JOIN_EUI`, `NWK_KEY`, `APP_KEY`), default Wi-Fi SoftAP passwords, and server endpoints. Real credentials must reside in `credentials.h` (git-ignored) and never be committed to source control.
 
-```text
-AITA_Sripts/
-├── gateway_hub/                         # Main Hub for all Gateway & Server-Side Services
-│   ├── index.html                       # Edge Monitor Web App + Stationary Core-First Firmware Generator
-│   ├── edge_dash.py                     # Gateway HTTP & MQTT Backend Service (/root/edge_dash.py on Dragino)
-│   ├── compile_bridge.py                # Remote Build Server Arduino-CLI Compiler Bridge (/root/compile_bridge.py on lacave)
-│   ├── parts_catalog.json               # Modular sensor catalog & EMF1 wire-type definitions
-│   ├── ECOWAN_NodeCore_Template.ino     # Stationary NodeCore v2.4 Arduino template (OTA + LoRaWAN + UTC Slots + EMF1)
-│   ├── CODEGEN_CORE_CONTRACT.json       # Stationary core contract specification
-│   ├── test_codegen.js                  # Automated unit test suite for codegen & UI
-│   ├── README.md                        # Gateway & server hub documentation
-│   └── CHANGELOG.md                     # Hub & Codegen v2.4 changelog
-├── ENODE1/
-│   ├── ENODE1.ino                       # Production NodeCore v2.4 firmware for ENODE1 (UTC slot 5s)
-│   └── credentials.h.example            # Example node credentials template
-├── ENODE2/
-│   ├── ENODE2.ino                       # Production NodeCore v2.4 firmware for ENODE2 (UTC slot 35s)
-│   └── credentials.h.example            # Example node credentials template
-├── credentials.h.example                # Shared credentials template
-└── README.md                            # Project overview
-```
+## Subdirectories & System Boundaries
+- **[gateway_hub](./gateway_hub/README.md)**: Central operational hub containing the Dragino Edge Monitor backend service (`edge_dash.py`), frontend dashboard with single-page firmware code generator (`index.html`), remote compiler bridge (`compile_bridge.py`), sensor parts catalog (`parts_catalog.json`), stationary core contracts, and codegen unit test suite.
+- **[ENODE1](./ENODE1/README.md)**: Production reference firmware for sensor node `ENODE1` equipped with DHT11 temperature/humidity and HW-038 soil moisture sensors, configured with UTC minute slot offset at second 5.
+- **[ENODE2](./ENODE2/README.md)**: Production reference firmware for sensor node `ENODE2` equipped with DHT11 temperature/humidity and HW-038 soil moisture sensors, configured with UTC minute slot offset at second 35.
 
----
+## Global Invariants
+- **KISS Engineering**: Simplicity over cleverness; automate cognitive burden (auto-assigning next free wire encoding slots, auto-filtering occupied GPIO pins); single source of truth in `gateway_hub/`.
+- **Radio & Timing Discipline**:
+  - Transceivers operate under the `AS923` regional plan using `RadioLib`.
+  - ESP32 nodes must observe a 5,000 ms settle delay (`RADIO_SETUP_DELAY_MS`) after radio SPI setup before calling `activateOTAA()`.
+  - LoRaWAN sessions and nonces must persist across reboots in ESP32 Preferences (`"lorawan"` namespace) to prevent ChirpStack DevNonce replay rejection.
+  - Uplinks must follow the 60-second UTC slot schedule (`SLOT_PERIOD_MS = 60000UL`). Nodes must never send burst catch-up transmissions after missed slots.
+- **Payload Standards (EMF1 v1 on FPort 10)**:
+  - Magic byte `0xE1` followed by `[field_id][type_code][big-endian value]` records.
+  - Missing or faulty sensor readings (`NaN`) must be omitted from the payload rather than transmitted as zero.
+- **Dual-Layer OTA Rollback Fail-Safe**:
+  - Newly flashed firmware boots in `ESP_OTA_IMG_PENDING_VERIFY`. It is marked valid via `esp_ota_mark_app_valid_cancel_rollback()` only after a successful uplink cycle.
+  - The maintenance portal (`http://192.168.4.1/`) provides a 1-click fallback endpoint (`POST /rollback`) that restarts the node into the previous working partition.
+- **Zero-Touch Provisioning Synchronization**:
+  - Sensor nodes added or updated via the Edge Monitor dashboard are automatically provisioned in ChirpStack v4 via its local REST API without manual gateway intervention.
 
-## 2. KISS Engineering Philosophy ("Keep It Simple, Stupid")
+## Global Side Effects
+- Mutates persistent JSON states on the Dragino gateway (`/root/node_configs.json`, `/root/edge_monitor_state.json`).
+- Directly modifies the ChirpStack v4 PostgreSQL database via authenticated local REST API calls on port 8090.
+- Interacts with the gateway MQTT broker on `127.0.0.1:1883` under `application/+/device/+/event/+`.
+- Writes session states and nonces to ESP32 onboard flash NVS across power cycles.
 
-The entire ECOWAN codebase follows the KISS engineering principle:
-- **Simplicity Over Cleverness**: Build the simplest solution that works reliably. Avoid speculative abstractions and deep indirection.
-- **Automate the Cognitive Burden**: Routine decisions (such as finding available EMF1 wire slots and filtering occupied GPIO pins) are solved automatically in code with zero user effort.
-- **Trim the Fat**: Continuously remove dead code, unused functions, legacy directories, and duplicate files.
-- **Single Source of Truth**: All gateway and server files reside in `gateway_hub/` without redundant root copies.
-- **Direct, Actionable UI**: Essential actions (like "Save Configuration" and "Download Code") remain visible and immediately accessible.
-
----
-
-## 3. Hardware Architecture & Pin Map
-
-### Sensor Nodes (`ENODE1`, `ENODE2`, and Generated Nodes)
-- **MCU**: ESP32 (`115200` baud serial monitor)
-- **LoRa Transceiver**: Semtech SX1262 / Ai-Thinker RA-01SH (`RadioLib`, `AS923` region plan)
-
-| Function | ESP32 Pin | Notes |
-| :--- | :--- | :--- |
-| **LoRa `SCK`** | `GPIO18` | Explicit `SPI.begin(18, 19, 23, 5)` |
-| **LoRa `MISO`** | `GPIO19` | SPI MISO |
-| **LoRa `MOSI`** | `GPIO23` | SPI MOSI |
-| **LoRa `NSS / CS`** | `GPIO5` | SPI Chip Select |
-| **LoRa `DIO1`** | `GPIO33` | SX1262 IRQ |
-| **LoRa `RESET`** | `GPIO27` | SX1262 Hardware Reset |
-| **LoRa `BUSY`** | `GPIO26` | SX1262 Busy Status |
-| **DHT11 Data** | `GPIO4` | 1-Wire Digital Temperature & Humidity (with 2.1s retry on `NAN`) |
-| **HW-038 Soil Moisture `AO`** | `GPIO34` / `GPIO32` | `ADC1` input (`12-bit`, `ADC_11db`, 8-sample average; max `3.3V`) |
-| **4-Pin Light Sensor (Optional)** | Configurable | Dual-dropdown `AO` (ADC1 pin) + optional `DO` threshold pin (Active-LOW) |
-
-### Gateway (`Dragino LPS8v2`) & Build Server (`lacave`)
-- **LoRaWAN Network Server**: ChirpStack v4
-- **MQTT Broker**: `127.0.0.1:1883` (`application/+/device/+/event/+`)
-- **Edge Monitor Service**: `edge-monitor.service` (`/usr/bin/python3 -u /root/edge_dash.py` on port `8026`, Tailscale HTTPS on port `8443`)
-- **Build Server**: `compile-bridge.service` (`/usr/bin/python3 -u /root/compile_bridge.py` on `lacave:8027` with persistent build cache)
-
----
-
-## 4. Stationary NodeCore v2.4 & Uplink Reliability
-
-Every ECOWAN node sketch (`ENODE1.ino`, `ENODE2.ino`, and sketches generated via `gateway_hub/index.html`) shares an immutable **NodeCore v2.4** foundation:
-
-1. **5-Second Radio Settle Delay (`RADIO_SETUP_DELAY_MS = 5000UL`)**:
-   - After `radio.begin()` and `loraNode.beginOTAA(...)`, the firmware waits **5,000 ms** before calling `activateOTAA()`, allowing the 3.3V rail and SX1262 TCXO/PLL to stabilize.
-2. **NVS Session & Nonce Persistence**:
-   - Saves RadioLib `nonces` and `session` buffers in ESP32 `Preferences` (`"lorawan"` namespace) so reboots restore the active LoRaWAN session without burning `DevNonce` values or resetting frame counters (`FCnt`).
-3. **UTC Slot Collision Avoidance (`DeviceTimeReq` / `DeviceTimeAns`)**:
-   - Requests network UTC time via LoRaWAN MAC command `0x0D` (`DeviceTimeReq`) upon join and every 10 uplinks.
-   - Aligns transmissions to each node's assigned UTC second within the reporting cycle (`ENODE1` = second `5`, `ENODE2` = second `35` in a `60s` period).
-4. **Password-Protected WLAN `.bin` OTA (`WebServer` on Port 80)**:
-   - Runs a dedicated FreeRTOS task on Core 0 serving `http://192.168.4.1/` (`/update` accepts `.bin` firmware images) serialized via `coreMutex`.
-
----
-
-## 5. Payload Codec Standard (`EMF1 v1` on `FPort 10`)
-
-- **Magic Header**: `0xE1` on **LoRaWAN `FPort 10`**
-- **Record Layout**: `[field_id][type_code][big-endian value]`
-  - `0x01` **Temperature**: type `0x24` (`int16`, scale `0.01 °C`)
-  - `0x02` **Humidity**: type `0x23` (`uint16`, scale `0.01 %RH`)
-  - `0x03` **Soil Moisture**: type `0x11` (`uint16`, scale `1`, raw 12-bit ADC counts `0..4095`)
-  - `0x10` **Core Uptime**: type `0x31` (`uint32`, scale `1`, seconds — emitted automatically in core-only mode)
-- **Missing Sensor Rule**: Failed sensor reads (`NAN`) are omitted from the EMF1 frame rather than encoded as `0`.
-
----
-
-## 6. Verification
-
-Run the automated codegen & UI unit test suite from the repository root:
-
-```bash
-node gateway_hub/test_codegen.js
-```
+## System Verification
+- Run: `node gateway_hub/test_codegen.js`
