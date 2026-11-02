@@ -48,9 +48,6 @@ CONFIGS_FILE = Path(os.environ.get("DASH_CONFIG_FILE", "/root/node_configs.json"
 CATALOG_FILE = Path(os.environ.get("DASH_CATALOG_FILE", str(Path(__file__).resolve().with_name("parts_catalog.json"))))
 CODEC_JS_FILE = Path(os.environ.get("DASH_CODEC_JS_FILE", str(Path(__file__).resolve().with_name("chirpstack_codec.js"))))
 CODEC_STANDARD_FILE = Path(os.environ.get("DASH_CODEC_STANDARD_FILE", str(Path(__file__).resolve().with_name("PAYLOAD_CODEC_STANDARD.md"))))
-EMF1_REGISTRY_FILE = Path(os.environ.get("DASH_EMF1_REGISTRY_FILE", str(Path(__file__).resolve().with_name("emf1_registry.json"))))
-OTA_CORE_CONTRACT_FILE = Path(os.environ.get("DASH_OTA_CORE_CONTRACT_FILE", str(Path(__file__).resolve().with_name("ota_core_contract.json"))))
-CODEGEN_SCRIPT_FILE = Path(__file__).resolve().with_name("build_emf1_artifacts.py")
 LATE_SECONDS = max(30, int(os.environ.get("DASH_LATE_SECONDS", "90")))
 OFFLINE_SECONDS = max(LATE_SECONDS + 30, int(os.environ.get("DASH_OFFLINE_SECONDS", "180")))
 SAVE_SECONDS = max(1, int(os.environ.get("DASH_SAVE_SECS", "5")))
@@ -520,7 +517,7 @@ def cs_get_or_create_token() -> str:
     return ""
 
 
-def cs_api_request(method: str, path: str, body: dict | None = None, timeout: float = 5.0) -> tuple[int, dict]:
+def cs_api_request(method: str, path: str, body: dict | None = None, timeout: float = 5.0, retry_on_unauth: bool = True) -> tuple[int, dict]:
     """Perform a request against the local ChirpStack v4 REST API (127.0.0.1:8090)."""
     token = cs_get_or_create_token()
     if not token:
@@ -539,6 +536,15 @@ def cs_api_request(method: str, path: str, body: dict | None = None, timeout: fl
             raw = resp.read().decode("utf-8", errors="replace")
             return resp.status, (json.loads(raw) if raw.strip() else {})
     except urllib.error.HTTPError as exc:
+        if exc.code == 401 and retry_on_unauth:
+            global _CS_TOKEN_CACHE
+            _CS_TOKEN_CACHE = ""
+            try:
+                CHIRPSTACK_TOKEN_FILE.unlink(missing_ok=True)
+            except Exception:
+                pass
+            print("[ChirpStack] Expired or invalid token (HTTP 401). Invalidated cache; retrying with fresh token...", flush=True)
+            return cs_api_request(method, path, body, timeout=timeout, retry_on_unauth=False)
         try:
             raw = exc.read().decode("utf-8", errors="replace")
             return exc.code, (json.loads(raw) if raw.strip() else {"error": f"HTTP {exc.code}"})
@@ -1415,15 +1421,6 @@ def field_sketch_name(value: str) -> str:
     return f"Node_{name}" if name[0].isdigit() else name
 
 
-def extract_marked_source_block(source: str, start_marker: str, end_marker: str) -> str:
-    """Extract exactly one marker-delimited source block, preserving bytes/line endings in the text."""
-    lines = source.splitlines(keepends=True)
-    starts = [i for i, line in enumerate(lines) if start_marker in line]
-    ends = [i for i, line in enumerate(lines) if end_marker in line]
-    if len(starts) != 1 or len(ends) != 1 or starts[0] >= ends[0]:
-        raise ValueError(f"Expected exactly one ordered source block: {start_marker} ... {end_marker}")
-    return "".join(lines[starts[0]:ends[0] + 1])
-
 
 class Handler(BaseHTTPRequestHandler):
     server_version = "EdgeMonitor/" + VERSION
@@ -1485,15 +1482,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, EMF1_REGISTRY)
             return
         if path == "/api/build-status":
-            registry_hash = hashlib.sha256(EMF1_REGISTRY_FILE.read_bytes()).hexdigest() if EMF1_REGISTRY_FILE.exists() else None
             self.send_json(200, {
                 "ok": True, "buildServiceConfigured": False, "otaCoreRequired": True,
-                "otaCoreVersion": "edge-ota-core-v1", "otaCoreContractSha256": json.loads(OTA_CORE_CONTRACT_FILE.read_text(encoding="utf-8")).get("blockSha256") if OTA_CORE_CONTRACT_FILE.exists() else None, "sourceAssembly": "single-sketch-ota-prefix-plus-emf1-application", "firmwareSourceArtifact": "one-assembled-ino", "payloadCodecStandard": "Edge Measurement Format v1 (EMF1)",
+                "otaCoreVersion": "edge-ota-core-v1", "otaCoreContractSha256": None, "sourceAssembly": "single-sketch-ota-prefix-plus-emf1-application", "firmwareSourceArtifact": "one-assembled-ino", "payloadCodecStandard": "Edge Measurement Format v1 (EMF1)",
                 "payloadCodecMagic": "0xE1", "payloadCodecFPort": EMF1_FPORT,
                 "codeGenerationFormats": ["edge_measurement_v1"],
                 "legacyReceiveCompatibility": bool(EMF1_REGISTRY.get("legacyReceiveCompatibility", {}).get("enabled")),
                 "legacyGenerationEnabled": False, "codecRegistrySchema": EMF1_REGISTRY.get("schema"),
-                "codecRegistrySha256": registry_hash, "compiler": None, "automaticOtaPush": False,
+                "codecRegistrySha256": None, "compiler": None, "automaticOtaPush": False,
                 "message": "The wizard assembles one Arduino .ino: fixed WLAN OTA maintenance prefix followed by generated EMF1/sensor application code. Field map/configuration/ChirpStack codecs are sidecar build inputs. Legacy Fixed6 is receive-only compatibility. Compilation and automatic WLAN installation remain future milestones."
             })
             return
@@ -1615,139 +1611,6 @@ class Handler(BaseHTTPRequestHandler):
         # Compilation proxy also stays accessible without auth so nodes can be updated.
         if parsed.path.startswith("/api/") and parsed.path != "/api/compile" and not self.auth_ok():
             self.auth_required_response()
-            return
-
-        if parsed.path in ("/api/field-package", "/api/firmware-source"):
-            try:
-                length = int(self.headers.get("Content-Length", "0"))
-            except ValueError:
-                length = 0
-            if length <= 0 or length > 256 * 1024:
-                self.send_json(413 if length > 256 * 1024 else 400, {"ok": False, "error": "Codegen request must be 1–262144 bytes"})
-                return
-            try:
-                req = json.loads(self.rfile.read(length).decode("utf-8"))
-                cfg = validate_node_config(req.get("configuration", {}), PART_CATALOG)
-                field_doc = req.get("fieldPackage", {})
-                firmware_source = req.get("firmwareSource", "")
-                if not isinstance(field_doc, dict):
-                    raise ValueError("Field package metadata must be an object.")
-                if field_doc.get("payloadCodec") != "edge_measurement_v1" or int(field_doc.get("codecFPort", -1)) != EMF1_FPORT:
-                    raise ValueError("Codegen contract failed: generated field package must declare EMF1 v1 on FPort 10.")
-                if field_doc.get("expectedNodeDevEui") != cfg.get("devEui"):
-                    raise ValueError("Codegen contract failed: field package DevEUI does not match the validated configuration.")
-                if field_doc.get("codecRegistrySchema") != EMF1_REGISTRY.get("schema"):
-                    raise ValueError("Codegen contract failed: field package registry schema is missing or mismatched.")
-                if field_doc.get("sourceAssembly") != "single-sketch-ota-prefix-plus-emf1-application":
-                    raise ValueError("Codegen contract failed: firmware must be assembled as one .ino with the OTA prefix before generated EMF1 application code.")
-                sketch_name = field_sketch_name(cfg.get("name", "EdgeNode"))
-                expected_source_path = f"firmware/{sketch_name}/{sketch_name}.ino"
-                if field_doc.get("firmwareSourceFile") != f"{sketch_name}/{sketch_name}.ino":
-                    raise ValueError("Codegen contract failed: browser sketch filename does not match the normalized Arduino sketch name.")
-                def stable_field_contract(items):
-                    keys = ("id", "key", "sourceKey", "sensorId", "sourceOccurrence", "sensorIndex", "fieldIndex", "typeCode", "wireTypeName", "scale", "unit", "label", "partId", "sensorLabel")
-                    output = []
-                    for item in items if isinstance(items, list) else []:
-                        output.append({k: item.get(k) for k in keys})
-                    return output
-                if stable_field_contract(field_doc.get("codecFields")) != stable_field_contract(cfg.get("codecFields")):
-                    raise ValueError("Codegen contract failed: browser field map differs from server-normalized field map. Reopen the wizard, save the configuration, and regenerate the bundle.")
-                if not isinstance(firmware_source, str) or len(firmware_source) > 200_000:
-                    raise ValueError("Assembled firmware source is missing or too large")
-                required_ota_markers = ("edge-ota-core-v1", "void otaBegin()", "void otaHandleClient()", "Update.begin", "FIXED WLAN OTA CORE START")
-                missing_ota = [marker for marker in required_ota_markers if marker not in firmware_source]
-                if missing_ota:
-                    raise ValueError("OTA-first template contract failed; missing required core marker(s): " + ", ".join(missing_ota))
-                required_codec_markers = ("EDGE_MEASUREMENT_FORMAT_V1", "EMF1_MAGIC", "0xE1", "EDGE_EMF_V1_FPORT", "emfAddValue", "emfCommonType", "emfTypeSpec")
-                missing_codec = [marker for marker in required_codec_markers if marker not in firmware_source]
-                if missing_codec:
-                    raise ValueError("EMF1 payload codec contract failed; missing required marker(s): " + ", ".join(missing_codec))
-                if "LEGACY_FIXED6" in firmware_source or "legacyPack(" in firmware_source:
-                    raise ValueError("Codegen contract failed: Legacy Fixed6 must not be emitted by the generator.")
-                if firmware_source.count("FIXED WLAN OTA CORE START") != 1 or firmware_source.count("FIXED WLAN OTA CORE END") != 1:
-                    raise ValueError("OTA source must contain exactly one fixed maintenance block.")
-                core_start = firmware_source.index("FIXED WLAN OTA CORE START")
-                core_end = firmware_source.index("FIXED WLAN OTA CORE END")
-                app_marker = firmware_source.find("// ===== GENERATED SENSOR INTEGRATIONS START =====")
-                if not (core_start < core_end < app_marker):
-                    raise ValueError("Source assembly invalid: generated EMF1/sensor code must follow the fixed OTA core prefix.")
-                ota_block = extract_marked_source_block(firmware_source, "FIXED WLAN OTA CORE START", "FIXED WLAN OTA CORE END")
-                prefix = firmware_source[:app_marker]
-                source_bytes = firmware_source.encode("utf-8")
-                source_hash = hashlib.sha256(source_bytes).hexdigest()
-                ota_block_hash = hashlib.sha256(ota_block.encode("utf-8")).hexdigest()
-                prefix_hash = hashlib.sha256(prefix.encode("utf-8")).hexdigest()
-                if not OTA_CORE_CONTRACT_FILE.exists():
-                    raise ValueError("Protected OTA-core contract is missing; refusing to create source output.")
-                ota_contract = json.loads(OTA_CORE_CONTRACT_FILE.read_text(encoding="utf-8"))
-                if ota_contract.get("version") != "edge-ota-core-v1" or ota_contract.get("blockSha256") != ota_block_hash:
-                    raise ValueError("Protected OTA core hash mismatch. Refusing to download source; an intentional core change requires a version/hash review.")
-                registry_hash = hashlib.sha256(EMF1_REGISTRY_FILE.read_bytes()).hexdigest() if EMF1_REGISTRY_FILE.exists() else None
-                source_path = f"firmware/{sketch_name}/{sketch_name}.ino"
-                build_manifest = {
-                    "manifestSchema": "edge-monitor-firmware-build-v1",
-                    "artifactType": "assembled-arduino-source",
-                    "sourceAssembly": "single-sketch-ota-prefix-plus-emf1-application",
-                    "sourceFile": source_path,
-                    "sourceSha256": source_hash,
-                    "sourceSizeBytes": len(source_bytes),
-                    "sourcePrefixSha256": prefix_hash,
-                    "otaCore": {"version": "edge-ota-core-v1", "position": "prefix", "blockSha256": ota_block_hash,
-                                "contractFile": "ota_core_contract.json", "startMarker": "FIXED WLAN OTA CORE START", "endMarker": "FIXED WLAN OTA CORE END"},
-                    "payload": {"standard": "EMF1 v1", "fPort": EMF1_FPORT, "registrySchema": EMF1_REGISTRY.get("schema"), "registrySha256": registry_hash},
-                    "node": {"name": cfg.get("name"), "devEui": cfg.get("devEui"), "firmwareProfile": cfg.get("firmwareProfile")},
-                    "build": {"ready": False, "compiledBinaryIncluded": False, "status": "source-only-template-not-compiled",
-                              "requiredBeforeCompile": ["select exact ESP32 board/FQBN and partition layout", "integrate the selected LoRaWAN library and uplink callback", "resolve sensor driver dependencies and pin conflicts", "validate region and maximum application payload size", "harden OTA authentication and firmware verification"]}
-                }
-                package_doc = {
-                    "packageType": "edge-monitor-single-sketch-field-job", "schemaVersion": 6,
-                    "catalogVersion": PART_CATALOG.get("catalogVersion", "unknown"),
-                    "preparedAt": utc_now(), "expectedNodeDevEui": cfg["devEui"],
-                    "configuration": cfg, "otaCoreVersion": "edge-ota-core-v1",
-                    "sourceAssembly": "single-sketch-ota-prefix-plus-emf1-application", "firmwareSourceFile": source_path,
-                    "firmwareSourceSha256": source_hash, "otaCoreBlockSha256": ota_block_hash,
-                    "buildManifest": "BUILD_MANIFEST.json",
-                    "payloadCodec": "edge_measurement_v1", "payloadCodecVersion": "EMF1",
-                    "codecFPort": EMF1_FPORT, "codecRegistrySchema": EMF1_REGISTRY.get("schema"),
-                    "codecRegistrySha256": registry_hash, "codecFields": cfg.get("codecFields", []),
-                    "otaCoreRequired": True, "firmwareBinaryIncluded": False,
-                    "configurationAppliedToDevice": False, "buildServiceConfigured": False,
-                    "codeGenerationFormatCount": 1, "buildStatus": "single-assembled-source-only-not-compiled",
-                    "notice": "The firmware application is one assembled Arduino .ino: the fixed edge-ota-core-v1 maintenance prefix followed by generated EMF1 codec and sensor integrations. Configuration, build manifest and ChirpStack codecs are sidecar inputs to the future compiler. This is source-only, not compiled firmware; LoRaWAN uplink integration, board/dependency resolution, compiler service and automatic WLAN installation are not yet configured. Legacy Fixed6 is receive-only and is not generated."
-                }
-                memory = io.BytesIO()
-                with zipfile.ZipFile(memory, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-                    bundle.writestr("field-job.json", json.dumps(package_doc, indent=2, ensure_ascii=False))
-                    bundle.writestr("node-config.json", json.dumps(cfg, indent=2, ensure_ascii=False))
-                    bundle.writestr("BUILD_MANIFEST.json", json.dumps(build_manifest, indent=2, ensure_ascii=False))
-                    bundle.writestr(source_path, firmware_source)
-                    if CODEC_JS_FILE.exists():
-                        bundle.write(CODEC_JS_FILE, "chirpstack_codec_universal.js")
-                        bundle.writestr("chirpstack_codec.js", generate_chirpstack_codec(cfg.get("codecFields", [])))
-                    if CODEC_STANDARD_FILE.exists():
-                        bundle.write(CODEC_STANDARD_FILE, "PAYLOAD_CODEC_STANDARD.md")
-                    if EMF1_REGISTRY_FILE.exists():
-                        bundle.write(EMF1_REGISTRY_FILE, "emf1_registry.json")
-                    if CODEGEN_SCRIPT_FILE.exists():
-                        bundle.write(CODEGEN_SCRIPT_FILE, "build_emf1_artifacts.py")
-                    if OTA_CORE_CONTRACT_FILE.exists():
-                        bundle.write(OTA_CORE_CONTRACT_FILE, "ota_core_contract.json")
-                    bundle.writestr("README.txt", "Edge Monitor EMF1 single-sketch field job\n\nThe firmware source exists as exactly one Arduino sketch: " + source_path + ". Its prefix contains the fixed WLAN OTA maintenance core (edge-ota-core-v1); the generated EMF1 encoder and sensor integrations follow it in the same .ino. There is no separate OTA source file to concatenate.\n\nBUILD_MANIFEST.json records source SHA-256, OTA block SHA-256, prefix SHA-256, EMF1 FPort and registry fingerprint. Configuration, build manifest and ChirpStack codec files are sidecar inputs for the future compiler, not chunks of firmware source.\n\nInstall chirpstack_codec.js (the configuration-bound field map) in the matching ChirpStack device profile. chirpstack_codec_universal.js is the generic fallback and names unknown custom IDs as field_XX. Legacy Fixed6 is receive-only compatibility for existing installed nodes; do not generate new firmware using it.\n\nSOURCE ONLY: no compiled .bin is included. The source still needs an exact ESP32 board/partition target, LoRaWAN uplink integration, library/dependency resolution, sensor/region/payload validation, and production OTA security review. The compiler server and automatic WLAN push are not configured. Do not flash this file as production firmware.\n")
-                if parsed.path == "/api/firmware-source":
-                    with zipfile.ZipFile(io.BytesIO(memory.getvalue()), "r") as checked_bundle:
-                        assembled_source = checked_bundle.read(source_path)
-                    self.send_bytes(200, "text/plain; charset=utf-8", assembled_source,
-                                    {"Content-Disposition": f'attachment; filename="{sketch_name}.ino"'})
-                else:
-                    name = field_slug(cfg.get("name", "node"))
-                    self.send_bytes(200, "application/zip", memory.getvalue(), {"Content-Disposition": f'attachment; filename="field-job-{name}.zip"'})
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                self.send_json(400, {"ok": False, "error": "Invalid JSON"})
-            except ValueError as exc:
-                self.send_json(400, {"ok": False, "error": str(exc)})
-            except Exception as exc:
-                print(f"[package] Build failed: {exc}", flush=True)
-                self.send_json(500, {"ok": False, "error": "Could not prepare field package"})
             return
 
         if parsed.path == "/api/configs":

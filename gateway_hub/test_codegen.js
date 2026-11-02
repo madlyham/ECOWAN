@@ -49,13 +49,19 @@ sandbox.window = sandbox;
 // Expose internal codegen functions from the IIFE for unit testing
 const instrumentedScript = mainScript.replace(
   /bootstrapAuth\(\);\s*\}\)\(\);/,
-  'window.__codegenTestApi = { CFG, CFG_BOARD_PROFILES, CFG_REFERENCE_NODES, cfgRandomHex, cfgNextFreeSlotSecond, cfgNormalizePayload, cfgConfigFingerprint, cfgValidate, cfgInspectSensorIssues, cfgBuildCodecFields, cfgBuildFieldPackage, cfgOtaCorePrefix, cfgGeneratedEmf1Application, cfgAssembledSketchSource, cfgSketchName };\n})();'
+  'window.__codegenTestApi = { CFG, CFG_BOARD_PROFILES, CFG_REFERENCE_NODES, cfgRandomHex, cfgNextFreeSlotSecond, cfgNormalizePayload, cfgConfigFingerprint, cfgValidate, cfgInspectSensorIssues, cfgBuildCodecFields, cfgBuildFieldPackage, cfgOtaCorePrefix, cfgGeneratedEmf1Application, cfgAssembledSketchSource, cfgSketchName, cfgEscapeHtml };\n})();'
 );
 
 vm.runInNewContext(instrumentedScript, sandbox, { filename: 'index.html', timeout: 5000 });
 const api = sandbox.__codegenTestApi;
 assert.ok(api, 'Codegen test API was not exposed');
 api.CFG.catalog = catalog;
+
+// 0. Test HTML entity escaping helper (Security by Design / DOM XSS prevention)
+assert.strictEqual(typeof api.cfgEscapeHtml, 'function', 'cfgEscapeHtml must be defined');
+assert.strictEqual(api.cfgEscapeHtml('<script>alert("xss")</script> & \'test\''), '&lt;script&gt;alert(&quot;xss&quot;)&lt;/script&gt; &amp; &#39;test&#39;');
+assert.strictEqual(api.cfgEscapeHtml(null), '');
+assert.strictEqual(api.cfgEscapeHtml(undefined), '');
 
 // 1. Test ENode1 Reference Profile Generation
 const enode1Profile = {
@@ -93,7 +99,8 @@ const setupBody = enode1Source1.slice(enode1Source1.indexOf('void setup()'));
 const radioIdx = setupBody.indexOf('beginRadioAndLoRaWAN();');
 const sensorIdx = setupBody.indexOf('initApplicationSensors();');
 const otaIdx = setupBody.indexOf('otaBegin()');
-assert.ok(radioIdx > 0 && sensorIdx > radioIdx && otaIdx > sensorIdx, 'Radio must initialize first on clean rail before sensors and before OTA access point');
+assert.ok(otaIdx > 0 && radioIdx > otaIdx && sensorIdx > radioIdx, 'otaBegin must start FIRST before radio to ensure wireless recovery is always available');
+assert.ok(setupBody.includes('esp_restart()'), 'Radio setup failure must trigger an auto-restart fallback rather than an infinite stall');
 assert.strictEqual((enode1Source1.match(/void setup\(\)/g) || []).length, 1, 'Exactly one setup() must exist');
 assert.strictEqual((enode1Source1.match(/void loop\(\)/g) || []).length, 1, 'Exactly one loop() must exist');
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## v2.9 — Hardened Boot Order, Pruned Endpoints & Security Sanitization
+- **Wi-Fi SoftAP Boot Order (Fix #1):** Started `otaBegin()` first before radio initialization in `setup()` so the emergency maintenance AP is always accessible even if radio setup fails. Added 60s timeout and automatic `esp_restart()` fallback on radio failure.
+- **Dead Legacy Endpoint Pruning (Fix #2):** Removed 133 lines of obsolete multi-file packaging code (`/api/field-package`, `/api/firmware-source`, and dead contract references) in `edge_dash.py`.
+- **ChirpStack Token Invalidation (Fix #3):** Auto-invalidates stale cached tokens on HTTP 401 Unauthorized in `edge_dash.py` and retries once with a fresh token.
+- **Compiler Bridge Stale Binary Unlink (Fix #4):** Ensures existing `.bin` files are deleted before `arduino-cli compile` runs in `compile_bridge.py`.
+- **DOM XSS Sanitization (Fix #5):** Added `cfgEscapeHtml()` in `index.html` to sanitize SSID and password in review cards, with test coverage in `test_codegen.js`.
+
 ## v2.8 — EGM Architecture Contracts & Reference Sketch Synchronization
 - Bootstrapped hierarchical Elephant-Goldfish Model (EGM) documentation contracts across Root `README.md` (Blueprint/Hay), `gateway_hub/README.md`, `ENODE1/README.md`, and `ENODE2/README.md`.
 - Regenerated `ENODE1.ino`, `ENODE2.ino`, and `ECOWAN_NodeCore_Template.ino` from the v2.7 codegen generator, ensuring all reference sketches have identical rollback fail-safe support.

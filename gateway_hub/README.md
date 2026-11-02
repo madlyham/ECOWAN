@@ -32,6 +32,9 @@ The `gateway_hub` directory is the unified operational hub for all gateway-side 
 - **EMF1 Wire Format Standard**: Frames sent to FPort 10 must start with magic header byte `0xE1`. Failed sensor reads (`NaN`) must be omitted from the frame rather than transmitted as zero.
 - **Headless Identity Synchronization**: LoRaWAN 1.0.3 devices require identical 128-bit `nwkKey` and `appKey`. The backend mirrors single-key inputs automatically.
 - **OTA Rollback Invariant**: Assembled firmware must boot in `ESP_OTA_IMG_PENDING_VERIFY` and cancel rollback via `esp_ota_mark_app_valid_cancel_rollback()` only after a successful first uplink.
+- **SoftAP Boot Priority**: Assembled NodeCore firmware starts `otaBegin()` first on Core 0 before radio initialization, ensuring the emergency maintenance portal and `/rollback` are always reachable wirelessly even if SX1262 setup fails.
+- **ChirpStack Token Self-Healing**: Backend invalidates cached tokens on HTTP 401 Unauthorized and automatically requests a fresh token.
+- **Compiler Clean-Build Safety**: Compiler bridge purges existing `.bin` files in the output directory before invoking `arduino-cli compile` to guarantee no stale binary artifacts are served.
 
 ## Side Effects
 - Mutates `/root/node_configs.json` and `/root/edge_monitor_state.json` on the Dragino gateway.

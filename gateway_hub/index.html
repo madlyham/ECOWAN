@@ -2217,6 +2217,11 @@ function cfgAdvanceStep() {
   }
   cfgSetStep(CFG.step + 1);
 }
+function cfgEscapeHtml(str) {
+  return String(str || '').replace(/[&<>"']/g, function (m) {
+    return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[m];
+  });
+}
 function cfgRenderReview() {
   var host = $('#cfgReview'); if (!host) return;
   host.textContent = '';
@@ -2241,7 +2246,7 @@ function cfgRenderReview() {
   values.forEach(function (item) { var card = el('div','cfg-review-item'); card.appendChild(el('span','',item[0])); card.appendChild(el('b','',item[1])); host.appendChild(card); });
   var emfNote=el('div','cfg-alert info','Core-First v2.4: Stationary WLAN .bin OTA, SX1262 LoRaWAN OTAA (5s settle delay + NVS persistence), DeviceTime UTC slot scheduler (immediate-TX at slot mark), and EMF1 v1 (FPort 10) are assembled into one sketch.'); host.appendChild(emfNote);
   var deployNote = el('div', 'cfg-alert info');
-  deployNote.innerHTML = '<strong>Deployment Workflow:</strong><br>1. Click <b>Compile &amp; Download .bin</b> (or download .ino to compile locally).<br>2. Connect your Wi-Fi to <b>' + (payload.otaApSsid || 'ECOWAN-node') + '</b> (Password: <code>' + (payload.otaApPassword || 'CHANGE_THIS_PASSWORD') + '</code>).<br>3. Open <a href="http://192.168.4.1/" target="_blank" rel="noopener">http://192.168.4.1/</a> in browser, select the downloaded <code>.bin</code>, and click Upload.<br><em>Fail-Safe Active:</em> Previous working firmware is preserved in the alternate flash partition with automatic self-testing and 1-click web rollback.';
+  deployNote.innerHTML = '<strong>Deployment Workflow:</strong><br>1. Click <b>Compile &amp; Download .bin</b> (or download .ino to compile locally).<br>2. Connect your Wi-Fi to <b>' + cfgEscapeHtml(payload.otaApSsid || 'ECOWAN-node') + '</b> (Password: <code>' + cfgEscapeHtml(payload.otaApPassword || 'CHANGE_THIS_PASSWORD') + '</code>).<br>3. Open <a href="http://192.168.4.1/" target="_blank" rel="noopener">http://192.168.4.1/</a> in browser, select the downloaded <code>.bin</code>, and click Upload.<br><em>Fail-Safe Active:</em> Previous working firmware is preserved in the alternate flash partition with automatic self-testing and 1-click web rollback.';
   host.appendChild(deployNote);
   if (!sensors.length) { var note=el('div','cfg-alert info','No optional sensors selected — the generated sketch will transmit the Core Health Uptime field (0x10, uint32 seconds) on its assigned UTC slot.'); host.appendChild(note); }
 }
@@ -3127,14 +3132,18 @@ function cfgGeneratedEmf1Application(payload) {
   lines.push('  }');
   lines.push('  coreMutex = xSemaphoreCreateMutex();');
   lines.push('  if (coreMutex == nullptr) { Serial.println("[Core] FATAL: mutex allocation failed."); while (true) delay(1000); }');
-  lines.push('  // Initialize Radio FIRST on clean power rail (matching verified hardware baseline)');
+  lines.push('  // 1. Start WLAN maintenance AP FIRST so wireless recovery & rollback are always accessible');
+  lines.push('  if (!otaBegin()) Serial.println("[OTA] WARNING: maintenance AP did not start.");');
+  lines.push('  // 2. Initialize Radio protected by coreMutex');
   lines.push('  if (xSemaphoreTake(coreMutex, portMAX_DELAY) != pdTRUE) while (true) delay(1000);');
   lines.push('  const bool started = beginRadioAndLoRaWAN();');
   lines.push('  xSemaphoreGive(coreMutex);');
-  lines.push('  if (!started) { while (true) { Serial.println("[Core] Radio setup failed; reboot to retry."); delay(10000); } }');
+  lines.push('  if (!started) {');
+  lines.push('    Serial.println("[Core] Radio setup failed; maintenance AP running. Rebooting in 60s if unrecovered...");');
+  lines.push('    delay(60000);');
+  lines.push('    esp_restart();');
+  lines.push('  }');
   lines.push('  initApplicationSensors();');
-  lines.push('  // Start WLAN maintenance AP after radio initialization');
-  lines.push('  if (!otaBegin()) Serial.println("[OTA] WARNING: maintenance AP did not start.");');
   lines.push('  randomSeed(static_cast<uint32_t>(esp_random()));');
   lines.push('  const uint32_t startupDelay = FIRST_UPLINK_DELAY_MS + static_cast<uint32_t>(random(0, 5001));');
   lines.push('  Serial.printf("[Scheduler] UTC slot is second %lu in each %lu s interval.\\n",');

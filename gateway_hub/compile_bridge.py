@@ -159,6 +159,11 @@ class CompileBridgeHandler(BaseHTTPRequestHandler):
         output_dir.mkdir(parents=True, exist_ok=True)
 
         with COMPILE_LOCK:
+            for old_bin in output_dir.glob("*.bin"):
+                try:
+                    old_bin.unlink(missing_ok=True)
+                except Exception:
+                    pass
             canonical_sketch_file.write_text(sketch_source, encoding="utf-8")
 
             cmd = [

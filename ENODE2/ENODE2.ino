@@ -443,14 +443,18 @@ void setup() {
   }
   coreMutex = xSemaphoreCreateMutex();
   if (coreMutex == nullptr) { Serial.println("[Core] FATAL: mutex allocation failed."); while (true) delay(1000); }
-  // Initialize Radio FIRST on clean power rail (matching verified hardware baseline)
+  // 1. Start WLAN maintenance AP FIRST so wireless recovery & rollback are always accessible
+  if (!otaBegin()) Serial.println("[OTA] WARNING: maintenance AP did not start.");
+  // 2. Initialize Radio protected by coreMutex
   if (xSemaphoreTake(coreMutex, portMAX_DELAY) != pdTRUE) while (true) delay(1000);
   const bool started = beginRadioAndLoRaWAN();
   xSemaphoreGive(coreMutex);
-  if (!started) { while (true) { Serial.println("[Core] Radio setup failed; reboot to retry."); delay(10000); } }
+  if (!started) {
+    Serial.println("[Core] Radio setup failed; maintenance AP running. Rebooting in 60s if unrecovered...");
+    delay(60000);
+    esp_restart();
+  }
   initApplicationSensors();
-  // Start WLAN maintenance AP after radio initialization
-  if (!otaBegin()) Serial.println("[OTA] WARNING: maintenance AP did not start.");
   randomSeed(static_cast<uint32_t>(esp_random()));
   const uint32_t startupDelay = FIRST_UPLINK_DELAY_MS + static_cast<uint32_t>(random(0, 5001));
   Serial.printf("[Scheduler] UTC slot is second %lu in each %lu s interval.\n",
