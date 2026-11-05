@@ -160,13 +160,15 @@ class RealSenseNode:
     def _try_opencv(self):
         try:
             import cv2
-            cap = cv2.VideoCapture(self.dev_index)
-            if cap.isOpened():
-                ret, _ = cap.read()
-                if ret:
-                    self._cv_cap = cap
-                    return True
-                cap.release()
+            for idx in [self.dev_index, 2, 0, 1]:
+                cap = cv2.VideoCapture(idx)
+                if cap.isOpened():
+                    ret, _ = cap.read()
+                    if ret:
+                        self._cv_cap = cap
+                        self.dev_index = idx
+                        return True
+                    cap.release()
             return False
         except Exception:
             return False
