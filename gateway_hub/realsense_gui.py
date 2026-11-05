@@ -20,7 +20,9 @@ from PIL import Image, ImageTk
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from realsense_node import RealSenseNode, downsample_rgb_buffer, inject_synthetic_smoke
-from vision_engine import VisualDifferenceEngine
+from vision_engine import VisualDifferenceEngine, FirewatchRuleEngine, slice_roi_blocks, stitch_roi_blocks
+from vision_transport import UsbLoRaBridgeClient, format_usb_lora_frame
+
 
 
 class CameraCaptureThread(threading.Thread):
@@ -97,8 +99,8 @@ class RealSenseViewerApp:
     def __init__(self, root):
         self.root = root
         self.root.title("ECOWAN 3.0 — RealSense Camera & Depth Monitor")
-        self.root.geometry("1060x700")
-        self.root.minsize(920, 620)
+        self.root.geometry("1120x730")
+        self.root.minsize(960, 640)
         self.root.configure(bg="#0a0f10")
 
         # State: Default to Camera 2 (Intel RealSense RGB)
@@ -116,6 +118,18 @@ class RealSenseViewerApp:
         self.photo_cam = None
         self.photo_grid = None
 
+        # Firewatch Rule Engine & USB LoRa Bridge State
+        self.firewatch_engine = FirewatchRuleEngine(cols=32, rows=24)
+        self.firewatch_mode = tk.BooleanVar(value=True)
+        self.transport_mode = tk.StringVar(value="Gateway HTTP")
+        self.com_port = tk.StringVar(value="AUTO")
+        self.usb_bridge = UsbLoRaBridgeClient(port="AUTO", dry_run=False)
+        self._last_alert_type = "none"
+        self._last_triggered_cells = []
+        self._last_candidate_smoke = []
+        self._last_sliced_blocks = []
+        self._last_airtime_ms = 0.0
+
         self._build_ui()
         self._start_camera_stream(self.active_camera_idx)
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
@@ -129,10 +143,10 @@ class RealSenseViewerApp:
         title_lbl.pack(side=tk.LEFT)
 
         sub_lbl = tk.Label(top_bar, text=" RealSense D435 Edge Vision Monitor", font=("Segoe UI", 11), fg="#8a9997", bg="#11181a")
-        sub_lbl.pack(side=tk.LEFT, padx=(4, 20))
+        sub_lbl.pack(side=tk.LEFT, padx=(4, 16))
 
         # Camera selector
-        tk.Label(top_bar, text="Camera:", font=("Segoe UI", 10), fg="#b3c0be", bg="#11181a").pack(side=tk.LEFT, padx=(10, 4))
+        tk.Label(top_bar, text="Camera:", font=("Segoe UI", 10), fg="#b3c0be", bg="#11181a").pack(side=tk.LEFT, padx=(6, 4))
         self.cam_combo = ttk.Combobox(
             top_bar,
             values=["Cam 2 (RealSense D435 RGB)", "Cam 0 (ASUS Laptop Webcam)", "Cam 1 (D435 Raw Depth)"],
@@ -143,6 +157,14 @@ class RealSenseViewerApp:
         self.cam_combo.pack(side=tk.LEFT, padx=4)
         self.cam_combo.bind("<<ComboboxSelected>>", self._on_cam_change)
 
+        # Firewatch Rules Checkbox
+        self.chk_fw = tk.Checkbutton(
+            top_bar, text="Firewatch Rules (Sky & Kinematics)", variable=self.firewatch_mode,
+            font=("Segoe UI", 9, "bold"), fg="#fab219", bg="#11181a", selectcolor="#0a0f10",
+            activebackground="#11181a", activeforeground="#ffffff"
+        )
+        self.chk_fw.pack(side=tk.LEFT, padx=(12, 4))
+
         # FPS & Status Badges
         self.status_badge = tk.Label(top_bar, text="NORMAL / CLEAR", font=("Segoe UI", 9, "bold"), fg="#ffffff", bg="#0ca30c", padx=10, pady=4)
         self.status_badge.pack(side=tk.RIGHT, padx=6)
@@ -151,7 +173,7 @@ class RealSenseViewerApp:
         self.fps_lbl.pack(side=tk.RIGHT, padx=12)
 
         # 2. Main Center Body (Dual Canvas: Live Camera + 32x24 Grid)
-        center_frame = tk.Frame(self.root, bg="#0a0f10", padx=16, pady=14)
+        center_frame = tk.Frame(self.root, bg="#0a0f10", padx=16, pady=12)
         center_frame.pack(fill=tk.BOTH, expand=True)
 
         # Left: Live Video Frame
@@ -182,36 +204,51 @@ class RealSenseViewerApp:
         btn_reset = tk.Button(
             bottom_panel, text="Set Baseline Reference", font=("Segoe UI", 9, "bold"),
             bg="#182224", fg="#e9f0ef", activebackground="#2e3d40", activeforeground="#ffffff",
-            relief="flat", padx=12, pady=5, command=self._reset_baseline
+            relief="flat", padx=10, pady=5, command=self._reset_baseline
         )
-        btn_reset.pack(side=tk.LEFT, padx=4)
+        btn_reset.pack(side=tk.LEFT, padx=3)
 
         self.btn_smoke = tk.Button(
             bottom_panel, text="Inject Smoke Plume", font=("Segoe UI", 9),
             bg="#182224", fg="#fab219", activebackground="#2e3d40", activeforeground="#ffffff",
-            relief="flat", padx=12, pady=5, command=self._toggle_smoke
+            relief="flat", padx=10, pady=5, command=self._toggle_smoke
         )
-        self.btn_smoke.pack(side=tk.LEFT, padx=4)
+        self.btn_smoke.pack(side=tk.LEFT, padx=3)
 
         btn_send = tk.Button(
-            bottom_panel, text="Transmit Delta to Gateway", font=("Segoe UI", 9, "bold"),
+            bottom_panel, text="Transmit Delta", font=("Segoe UI", 9, "bold"),
             bg="#2a78d6", fg="#ffffff", activebackground="#3987e5", activeforeground="#ffffff",
-            relief="flat", padx=14, pady=5, command=self._send_now
+            relief="flat", padx=12, pady=5, command=self._send_now
         )
-        btn_send.pack(side=tk.LEFT, padx=8)
+        btn_send.pack(side=tk.LEFT, padx=4)
 
         self.chk_auto = tk.Checkbutton(
-            bottom_panel, text="Auto-Transmit", font=("Segoe UI", 9),
+            bottom_panel, text="Auto-TX", font=("Segoe UI", 9),
             fg="#b3c0be", bg="#11181a", selectcolor="#0a0f10",
             activebackground="#11181a", activeforeground="#ffffff",
             command=self._toggle_auto_transmit
         )
-        self.chk_auto.pack(side=tk.LEFT, padx=6)
+        self.chk_auto.pack(side=tk.LEFT, padx=4)
+
+        # Transport & COM Port Selection
+        tk.Label(bottom_panel, text="Transport:", font=("Segoe UI", 9), fg="#8a9997", bg="#11181a").pack(side=tk.LEFT, padx=(10, 2))
+        self.combo_transport = ttk.Combobox(
+            bottom_panel,
+            values=["Gateway HTTP", "USB LoRa Bridge (ESP32)"],
+            textvariable=self.transport_mode,
+            state="readonly",
+            width=20
+        )
+        self.combo_transport.pack(side=tk.LEFT, padx=3)
+
+        tk.Label(bottom_panel, text="Port:", font=("Segoe UI", 9), fg="#8a9997", bg="#11181a").pack(side=tk.LEFT, padx=(6, 2))
+        self.ent_port = ttk.Entry(bottom_panel, textvariable=self.com_port, width=7)
+        self.ent_port.pack(side=tk.LEFT, padx=2)
 
         # Telemetry Labels
         self.lbl_telemetry = tk.Label(
             bottom_panel,
-            text="Airtime: 0.0 ms | Bandwidth Saved: 99.8% | Active: 0/768 cells",
+            text="Airtime: 0.0 ms | Bandwidth Saved: 99.8% | Active: 0/768 cells | ROIs: 0",
             font=("Segoe UI", 9), fg="#8a9997", bg="#11181a"
         )
         self.lbl_telemetry.pack(side=tk.RIGHT, padx=4)
@@ -240,16 +277,15 @@ class RealSenseViewerApp:
 
         # Initialize edge vision node
         self.node = RealSenseNode(mode='opencv', cols=32, rows=24, dev_index=idx)
+        self.firewatch_engine = FirewatchRuleEngine(cols=32, rows=24)
         self._schedule_frame_loop()
 
     def _reset_baseline(self):
         if self.node:
             self.node.engine = None
-            self.status_badge.config(text="BASELINE UPDATED", bg="#2a78d6")
-            self.root.after(1000, lambda: self.status_badge.config(
-                text="SMOKE ALERT DETECTED" if self._last_anomaly else "NORMAL / CLEAR",
-                bg="#ff3b30" if self._last_anomaly else "#0ca30c"
-            ))
+        self.firewatch_engine = FirewatchRuleEngine(cols=32, rows=24)
+        self.status_badge.config(text="BASELINE UPDATED", bg="#2a78d6")
+        self.root.after(1000, lambda: self._update_badge_status())
 
     def _toggle_smoke(self):
         self.inject_smoke = not self.inject_smoke
@@ -268,20 +304,50 @@ class RealSenseViewerApp:
         if not self.node or not self._latest_packets:
             print("No delta packets to transmit.")
             return
-        try:
-            res = self.node.send_to_hub(self.gateway_url, self._latest_packets)
-            print("Pushed to gateway:", res)
-            self.root.after(0, lambda: self.status_badge.config(text="TRANSMITTED TO GATEWAY", bg="#2a78d6"))
-            self.root.after(1200, lambda: self.status_badge.config(
-                text="SMOKE ALERT DETECTED" if self._last_anomaly else "NORMAL / CLEAR",
-                bg="#ff3b30" if self._last_anomaly else "#0ca30c"
+
+        mode = self.transport_mode.get()
+        port = self.com_port.get().strip()
+
+        if "USB LoRa" in mode:
+            # Transmit via USB Serial LoRa Dongle
+            self.usb_bridge.port = port
+            print(f"[USB LoRa] Dispatching {len(self._latest_packets)} packets via port {port}...")
+            total_airtime = 0.0
+            for pkt in self._latest_packets:
+                ack = self.usb_bridge.send_packet(pkt, fport=11)
+                total_airtime += ack.get("airtime_ms", 0.0)
+                print(f"[USB LoRa] ACK: {ack}")
+
+            self._last_airtime_ms = total_airtime
+            self.root.after(0, lambda: self.status_badge.config(
+                text=f"TX USB LORA ({total_airtime:.1f}ms)", bg="#9b5de5"
             ))
-        except Exception as e:
-            print("Transmission error:", e)
+            self.root.after(1200, lambda: self._update_badge_status())
+        else:
+            # Transmit via Gateway HTTP API
+            try:
+                res = self.node.send_to_hub(self.gateway_url, self._latest_packets)
+                print("Pushed to gateway:", res)
+                self.root.after(0, lambda: self.status_badge.config(text="TRANSMITTED TO GATEWAY", bg="#2a78d6"))
+                self.root.after(1200, lambda: self._update_badge_status())
+            except Exception as e:
+                print("Transmission error:", e)
+
+    def _update_badge_status(self):
+        if self._last_alert_type == "red_flame":
+            self.status_badge.config(text="🔥 RED FLAME ALERT", bg="#ff3b30")
+        elif self._last_alert_type == "rising_smoke":
+            self.status_badge.config(text="💨 RISING SMOKE PLUME", bg="#d97706")
+        elif len(self._last_candidate_smoke) > 0:
+            self.status_badge.config(text="👀 TRACKING SMOKE DYNAMICS", bg="#2a78d6")
+        elif self._last_anomaly:
+            self.status_badge.config(text="ALERT DETECTED", bg="#ff3b30")
+        else:
+            self.status_badge.config(text="NORMAL / CLEAR", bg="#0ca30c")
 
     def _schedule_frame_loop(self):
         self._process_frame_tick()
-        self.root.after(33, self._schedule_frame_loop) # Smooth 30 FPS tick
+        self.root.after(33, self._schedule_frame_loop)
 
     def _process_frame_tick(self):
         frame = None
@@ -289,7 +355,6 @@ class RealSenseViewerApp:
             frame = self.cam_thread.get_frame()
 
         if frame is None:
-            # Standby screen when waiting or switching
             status_txt = self.cam_thread.status_msg if self.cam_thread else "Connecting..."
             frame = np.full((240, 320, 3), 25, dtype=np.uint8)
             cv2.putText(frame, status_txt, (15, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1)
@@ -311,35 +376,84 @@ class RealSenseViewerApp:
         else:
             grid_bytes = downsample_rgb_buffer(raw_rgb, w, h, 32, 24)
 
-        # Delta analysis
+        # Convert to RGB tuple list for Firewatch Rule Engine
+        grid_tuples = [
+            (grid_bytes[i], grid_bytes[i + 1], grid_bytes[i + 2])
+            for i in range(0, len(grid_bytes), 3)
+        ]
+
         packets = []
         is_anomaly = False
         anomaly_count = 0
-        if self.node:
+        triggered_cells = []
+
+        if self.firewatch_mode.get():
+            fw_res = self.firewatch_engine.process_rgb_grid(grid_tuples)
+            self._last_alert_type = fw_res.get("alert_type", "none")
+            triggered_cells = fw_res.get("triggered_cells", [])
+            self._last_triggered_cells = triggered_cells
+            self._last_candidate_smoke = fw_res.get("candidate_smoke_cells", [])
+
+            if fw_res.get("alert", False) or self.inject_smoke:
+                is_anomaly = True
+                anomaly_count = max(len(triggered_cells), 4 if self.inject_smoke else 0)
+                # Slice foveated 20x20 pixel ROI blocks for edge AI
+                if triggered_cells:
+                    self._last_sliced_blocks = slice_roi_blocks(raw_rgb, w, h, triggered_cells, cols=32, rows=24)
+            else:
+                self._last_sliced_blocks = []
+        else:
+            # Fallback legacy difference engine
+            if self.node:
+                if self.node.engine and hasattr(self.node.engine, 'e_ref'):
+                    frozen = len(self.node.engine.e_ref.freeze_mask)
+                    if frozen > 0 or self.inject_smoke:
+                        is_anomaly = True
+                        anomaly_count = max(frozen, 4 if self.inject_smoke else 0)
+            self._last_alert_type = "legacy_delta" if is_anomaly else "none"
+
+        # Generate delta packets via node encoder
+        if self.node and (is_anomaly or self.auto_transmit):
             packets = self.node.process_frame(grid_bytes)
             self._latest_packets = packets
-            if self.node.engine and hasattr(self.node.engine, 'e_ref'):
-                frozen = len(self.node.engine.e_ref.freeze_mask)
-                if frozen > 0 or self.inject_smoke:
-                    is_anomaly = True
-                    anomaly_count = max(frozen, 4 if self.inject_smoke else 0)
 
         self._last_anomaly = is_anomaly
+        self._update_badge_status()
 
-        # Update Telemetry & Badges
-        if is_anomaly:
-            self.status_badge.config(text="SMOKE ALERT DETECTED", bg="#ff3b30")
-            airtime = 169.2
-            self.lbl_telemetry.config(text=f"Airtime: {airtime:.1f} ms | Bandwidth Saved: 99.2% | Active: {anomaly_count}/768 cells")
-        else:
-            self.status_badge.config(text="NORMAL / CLEAR", bg="#0ca30c")
-            self.lbl_telemetry.config(text="Airtime: 0.0 ms | Bandwidth Saved: 99.8% | Active: 0/768 cells")
+        # Update Telemetry
+        roi_count = len(self._last_sliced_blocks)
+        airtime = self._last_airtime_ms if self._last_airtime_ms > 0 else (169.2 if is_anomaly else 0.0)
+        bw_saved = 99.8 if not is_anomaly else 99.1
+        self.lbl_telemetry.config(
+            text=f"Airtime: {airtime:.1f} ms | Bandwidth Saved: {bw_saved}% | Active: {anomaly_count}/768 cells | ROIs: {roi_count}"
+        )
 
         if self.auto_transmit and packets:
             self._send_now()
 
-        # Render Left: Live Camera Canvas
+        # Render Left: Live Camera Canvas with Overlays
         cam_display = cv2.resize(frame, (460, 345))
+
+        # 1. Sky / Canopy Horizon line overlay if available
+        if self.firewatch_mode.get() and hasattr(self.firewatch_engine, "sky_mask") and self.firewatch_engine.sky_mask:
+            # Find approximate horizon row where sky ends
+            sky_rows = [r for r in range(24) if any(self.firewatch_engine.sky_mask[r * 32 + c] for c in range(32))]
+            if sky_rows:
+                horizon_y = int((max(sky_rows) + 1) * 345 / 24)
+                cv2.line(cam_display, (0, horizon_y), (460, horizon_y), (0, 220, 255), 1, cv2.LINE_AA)
+                cv2.putText(cam_display, "SKY HORIZON", (10, horizon_y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.35, (0, 220, 255), 1)
+
+        # 2. Bounding boxes on Camera Feed for triggered fire/smoke cells
+        for cell in (triggered_cells if triggered_cells else ([100, 101, 132, 133] if (is_anomaly and self.inject_smoke) else [])):
+            r_idx = cell // 32
+            c_idx = cell % 32
+            x0 = int(c_idx * 460 / 32)
+            y0 = int(r_idx * 345 / 24)
+            x1 = int((c_idx + 1) * 460 / 32)
+            y1 = int((r_idx + 1) * 345 / 24)
+            box_color = (0, 0, 255) if self._last_alert_type == "red_flame" else (0, 165, 255)
+            cv2.rectangle(cam_display, (x0, y0), (x1, y1), box_color, 2)
+
         img_cam = Image.fromarray(cam_display)
         self.photo_cam = ImageTk.PhotoImage(image=img_cam)
         self.canvas_cam.create_image(0, 0, image=self.photo_cam, anchor=tk.NW)
@@ -347,11 +461,15 @@ class RealSenseViewerApp:
         # Render Right: 32x24 Analysis Grid Canvas (WRITABLE COPY)
         grid_arr = np.frombuffer(grid_bytes, dtype=np.uint8).copy().reshape((24, 32, 3))
         if is_anomaly:
-            for c in [100, 101, 132, 133]:
+            active_list = triggered_cells if triggered_cells else ([100, 101, 132, 133] if self.inject_smoke else [])
+            for c in active_list:
                 r_idx = c // 32
                 c_idx = c % 32
                 if r_idx < 24 and c_idx < 32:
-                    grid_arr[r_idx, c_idx] = [255, 50, 50]
+                    if self._last_alert_type == "red_flame":
+                        grid_arr[r_idx, c_idx] = [255, 30, 20]
+                    else:
+                        grid_arr[r_idx, c_idx] = [240, 240, 240]
 
         grid_display = cv2.resize(grid_arr, (460, 345), interpolation=cv2.INTER_NEAREST)
         img_grid = Image.fromarray(grid_display)
@@ -361,6 +479,8 @@ class RealSenseViewerApp:
     def _on_close(self):
         if self.cam_thread:
             self.cam_thread.stop()
+        if self.usb_bridge:
+            self.usb_bridge.close()
         self.root.destroy()
 
 
@@ -372,3 +492,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

@@ -235,3 +235,201 @@ def _summarize_result(res: dict) -> dict:
         "cutoff_action": res["cutoff"]["action"],
         "frozen_e_ref_cells": res.get("frozen_cells_count", 0),
     }
+
+
+class FirewatchRuleEngine:
+    """Specialized firewatch tower rule engine prioritizing Red (flame), Grey/Black (smoke)
+    gated by Sky context and upward-rising kinematics (rejecting ground shadows and horizontal cloud sweeps).
+    """
+
+    def __init__(self, cols: int = 32, rows: int = 24):
+        self.cols = cols
+        self.rows = rows
+        self.sky_mask: list[bool] = [False] * (cols * rows)
+        self.ref_scene: list[tuple[int, int, int]] | None = None
+        self.history: list[set[int]] = []
+
+    def build_sky_mask(self, scene: list[tuple[int, int, int]]) -> list[bool]:
+        """Classify each column's upper contiguous blue/bright cells as sky."""
+        mask = [False] * (self.cols * self.rows)
+        for c in range(self.cols):
+            in_sky = True
+            for r in range(self.rows):
+                idx = r * self.cols + c
+                rgb = scene[idx]
+                red, green, blue = rgb
+                is_canopy = (green > red and green > blue and green > 60 and blue < 150)
+                if in_sky and not is_canopy:
+                    mask[idx] = True
+                else:
+                    in_sky = False
+                    mask[idx] = False
+        self.sky_mask = mask
+        return mask
+
+    def classify_color(self, rgb: tuple[int, int, int], ref_rgb: tuple[int, int, int] | None = None) -> str:
+        """Classify RGB pixel as 'red', 'grey', 'black', or 'normal'."""
+        r, g, b = rgb
+        luma = 0.299 * r + 0.587 * g + 0.114 * b
+        ref_luma = (0.299 * ref_rgb[0] + 0.587 * ref_rgb[1] + 0.114 * ref_rgb[2]) if ref_rgb else luma
+
+        # 1. Active flame core: high red dominance
+        if r > 140 and r > 1.3 * g and r > 1.5 * b:
+            return "red"
+
+        luma_diff = abs(luma - ref_luma)
+        saturation = max(r, g, b) - min(r, g, b)
+
+        # 2. Dense carbon smoke: dark, desaturated
+        if saturation <= 15 and luma < 75 and (luma_diff > 12 or (ref_rgb and (ref_rgb[2] > 180 or ref_rgb[1] > 70))):
+            return "black"
+
+        # 3. Ash / steam plume: medium-bright, desaturated, significant shift from saturated ref
+        if saturation <= 18 and luma >= 75 and (luma_diff > 10 or (ref_rgb and (ref_rgb[2] > 180 or ref_rgb[1] > 70))):
+            return "grey"
+
+        return "normal"
+
+    def initialize_reference(self, scene: list[tuple[int, int, int]]) -> None:
+        self.ref_scene = list(scene)
+        self.build_sky_mask(scene)
+        self.history.clear()
+
+    def has_sky_context(self, cell_idx: int) -> bool:
+        """True if the cell is sky or directly borders a sky cell (within 1 row/col of sky)."""
+        if self.sky_mask[cell_idx]:
+            return True
+        r = cell_idx // self.cols
+        c = cell_idx % self.cols
+        for dr in (-1, 0, 1):
+            nr = r + dr
+            if 0 <= nr < self.rows:
+                for dc in (-1, 0, 1):
+                    nc = c + dc
+                    if 0 <= nc < self.cols:
+                        if self.sky_mask[nr * self.cols + nc]:
+                            return True
+        return False
+
+    def process_rgb_grid(self, frame: list[tuple[int, int, int]]) -> dict:
+        """Process one frame against reference and history with sky gating and upward rising kinematics."""
+        if self.ref_scene is None:
+            self.initialize_reference(frame)
+            return {"alert": False, "alert_type": "none", "triggered_cells": []}
+
+        red_cells = []
+        candidate_smoke_cells = set()
+
+        for idx, rgb in enumerate(frame):
+            ref_c = self.ref_scene[idx]
+            color_class = self.classify_color(rgb, ref_c)
+            if color_class == "red":
+                red_cells.append(idx)
+            elif color_class in ("grey", "black"):
+                if self.has_sky_context(idx):
+                    candidate_smoke_cells.add(idx)
+
+        # Red flame triggers immediately
+        if red_cells:
+            return {
+                "alert": True,
+                "alert_type": "red_flame",
+                "triggered_cells": red_cells,
+                "candidate_smoke_cells": list(candidate_smoke_cells),
+            }
+
+        # Grey/Black smoke kinematic rising check
+        self.history.append(candidate_smoke_cells)
+        if len(self.history) > 5:
+            self.history.pop(0)
+
+        # Check upward propagation across frames
+        if len(self.history) >= 2 and candidate_smoke_cells:
+            prev_cells = self.history[-2]
+            if prev_cells:
+                min_curr_row = min(idx // self.cols for idx in candidate_smoke_cells)
+                min_prev_row = min(idx // self.cols for idx in prev_cells)
+                if min_curr_row < min_prev_row:
+                    triggered = sorted(list(candidate_smoke_cells))
+                    return {
+                        "alert": True,
+                        "alert_type": "rising_smoke",
+                        "triggered_cells": triggered,
+                        "candidate_smoke_cells": list(candidate_smoke_cells),
+                    }
+
+        return {
+            "alert": False,
+            "alert_type": "none",
+            "triggered_cells": [],
+            "candidate_smoke_cells": list(candidate_smoke_cells),
+        }
+
+
+def slice_roi_blocks(
+    live_bytes: bytes,
+    width: int,
+    height: int,
+    cell_indices: list[int],
+    cols: int = 32,
+    rows: int = 24,
+) -> list[dict]:
+    """Slice native pixel blocks from full-resolution RGB frame for triggered cells."""
+    bw = width // cols
+    bh = height // rows
+    blocks = []
+
+    for cell in cell_indices:
+        r = cell // cols
+        c = cell % cols
+        x0 = c * bw
+        y0 = r * bh
+
+        patch = bytearray(bw * bh * 3)
+        patch_idx = 0
+        for y in range(y0, y0 + bh):
+            row_start = y * width * 3
+            col_start = row_start + x0 * 3
+            col_end = col_start + bw * 3
+            patch[patch_idx : patch_idx + (bw * 3)] = live_bytes[col_start:col_end]
+            patch_idx += bw * 3
+
+        blocks.append({
+            "cell_idx": cell,
+            "x": x0,
+            "y": y0,
+            "w": bw,
+            "h": bh,
+            "rgb_bytes": bytes(patch),
+        })
+
+    return blocks
+
+
+def stitch_roi_blocks(
+    ref_bytes: bytes,
+    width: int,
+    height: int,
+    blocks: list[dict],
+    cols: int = 32,
+    rows: int = 24,
+) -> bytes:
+    """Stitch received high-resolution ROI pixel blocks onto the reference background canvas."""
+    canvas = bytearray(ref_bytes)
+    for block in blocks:
+        x0 = block["x"]
+        y0 = block["y"]
+        bw = block["w"]
+        bh = block["h"]
+        patch = block["rgb_bytes"]
+
+        patch_idx = 0
+        for y in range(y0, y0 + bh):
+            row_start = y * width * 3
+            col_start = row_start + x0 * 3
+            col_end = col_start + bw * 3
+            canvas[col_start:col_end] = patch[patch_idx : patch_idx + (bw * 3)]
+            patch_idx += bw * 3
+
+    return bytes(canvas)
+

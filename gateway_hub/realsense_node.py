@@ -261,6 +261,7 @@ def main():
     parser = argparse.ArgumentParser(description="ECOWAN Edge Vision Camera Node")
     parser.add_argument("--hub", default="http://100.83.203.103:8026/api/vision/delta", help="Dashboard delta endpoint")
     parser.add_argument("--mode", default="auto", choices=["auto", "realsense", "opencv", "synthetic"])
+    parser.add_argument("--port", default=None, help="Serial port for USB LoRa Bridge (e.g. COM3 or /dev/ttyUSB0)")
     parser.add_argument("--smoke", action="store_true", help="Inject synthetic smoke plume")
     parser.add_argument("--fps", type=float, default=1.0, help="Frame analysis rate in Hz")
     parser.add_argument("--once", action="store_true", help="Run single frame then exit")
@@ -269,6 +270,17 @@ def main():
     print(f"Initializing ECOWAN Vision Node (mode={args.mode})...")
     node = RealSenseNode(mode=args.mode)
     print(f"Backend active: {node.backend}")
+
+    # USB LoRa bridge client if port provided
+    usb_client = None
+    if args.port:
+        from vision_transport import UsbLoRaBridgeClient
+        usb_client = UsbLoRaBridgeClient(port=args.port)
+        if usb_client.connect():
+            print(f"[USB LoRa] Bridge connected on {args.port}.")
+        else:
+            print(f"[USB LoRa] Failed to open {args.port}, operating in dry-run simulation.")
+            usb_client.dry_run = True
 
     # Baseline frame
     f1 = node.capture_frame()
@@ -280,21 +292,27 @@ def main():
             frame = inject_synthetic_smoke(node.capture_frame())
         else:
             frame = node.capture_frame()
-            
+
         pkts = node.process_frame(frame)
         if pkts:
             print(f"Frame {node.frame_seq}: {len(pkts)} delta packets generated ({sum(len(p) for p in pkts)} B).")
-            try:
-                res = node.send_to_hub(args.hub, pkts)
-                print(f"  -> Dispatched to hub: {res}")
-            except Exception as e:
-                print(f"  -> Hub push failed: {e}")
+            if usb_client:
+                for p in pkts:
+                    ack = usb_client.send_packet(p, fport=11)
+                    print(f"  -> Dispatched via USB LoRa: {ack}")
+            else:
+                try:
+                    res = node.send_to_hub(args.hub, pkts)
+                    print(f"  -> Dispatched to hub: {res}")
+                except Exception as e:
+                    print(f"  -> Hub push failed: {e}")
         else:
             print(f"Frame {node.frame_seq}: Zero changes detected (no transmission needed).")
-            
+
         if args.once:
             break
         time.sleep(1.0 / max(0.1, args.fps))
+
 
 
 if __name__ == "__main__":

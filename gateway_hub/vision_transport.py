@@ -144,3 +144,98 @@ class MultiRadioKeyframeScheduler:
                 "packet": item["packet"],
             })
         return dispatched
+
+
+def format_usb_lora_frame(raw_bytes: bytes, fport: int = 11) -> str:
+    """Format raw EGDC payload for USB serial LoRa bridge transmission."""
+    return f"AT+LORA_TX={fport}:{raw_bytes.hex()}\n"
+
+
+def parse_usb_lora_ack(ack_line: str) -> dict:
+    """Parse serial response from USB LoRa bridge MCU."""
+    line = ack_line.strip()
+    if not line.startswith("OK"):
+        return {"ok": False, "error": line}
+
+    import re
+    fport_m = re.search(r"fport=(\d+)", line)
+    bytes_m = re.search(r"bytes=(\d+)", line)
+    air_m = re.search(r"airtime_ms=([\d\.]+)", line)
+
+    return {
+        "ok": True,
+        "fport": int(fport_m.group(1)) if fport_m else 11,
+        "bytes": int(bytes_m.group(1)) if bytes_m else 0,
+        "airtime_ms": float(air_m.group(1)) if air_m else 0.0,
+    }
+
+
+class UsbLoRaBridgeClient:
+    """Hardware serial client for the ESP32 + SX1262 USB LoRa Extension Dongle."""
+
+    def __init__(self, port: str = "AUTO", baudrate: int = 115200, timeout: float = 2.0, dry_run: bool = False):
+        self.port = port
+        self.baudrate = baudrate
+        self.timeout = timeout
+        self.dry_run = dry_run
+        self.ser = None
+
+    def connect(self) -> bool:
+        if self.dry_run:
+            return True
+        try:
+            import serial  # type: ignore
+            import serial.tools.list_ports  # type: ignore
+            target_port = self.port
+            if target_port == "AUTO":
+                ports = list(serial.tools.list_ports.comports())
+                if not ports:
+                    return False
+                target_port = ports[0].device
+            self.ser = serial.Serial(target_port, self.baudrate, timeout=self.timeout)
+            return True
+        except Exception:
+            return False
+
+    def ping(self) -> bool:
+        if self.dry_run or not self.ser:
+            return True
+        try:
+            self.ser.write(b"AT+PING\n")
+            line = self.ser.readline().decode("utf-8", errors="ignore").strip()
+            return "PONG" in line or "OK" in line
+        except Exception:
+            return False
+
+    def send_packet(self, packet: bytes, fport: int = 11) -> dict:
+        cmd = format_usb_lora_frame(packet, fport=fport)
+        if self.dry_run or not self.ser:
+            air_info = payload_codec.calculate_lora_airtime(len(packet), sf=7, bw_khz=125.0)
+            airtime = air_info.get("airtime_ms", 0.0)
+            return {
+                "ok": True,
+                "sent": True,
+                "dry_run": True,
+                "fport": fport,
+                "bytes": len(packet),
+                "airtime_ms": round(airtime, 1),
+                "raw_cmd": cmd.strip(),
+            }
+        try:
+            self.ser.write(cmd.encode("utf-8"))
+            resp = self.ser.readline().decode("utf-8", errors="ignore")
+            ack = parse_usb_lora_ack(resp)
+            ack["sent"] = ack.get("ok", False)
+            return ack
+        except Exception as e:
+            return {"ok": False, "sent": False, "error": str(e)}
+
+    def close(self) -> None:
+        if self.ser:
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+            self.ser = None
+
+
