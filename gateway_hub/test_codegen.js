@@ -95,6 +95,7 @@ assert.ok(enode1Source1.includes('nextSlotScheduled'), 'Generated sketch must us
 assert.ok(enode1Source1.includes('esp_ota_mark_app_valid_cancel_rollback'), 'Generated sketch must confirm OTA health');
 assert.ok(enode1Source1.includes('esp_ota_mark_app_invalid_rollback_and_reboot'), 'Generated sketch must support rollback');
 assert.ok(enode1Source1.includes('otaServer.on("/rollback"'), 'Generated sketch must register /rollback endpoint');
+assert.ok(enode1Source1.includes('xSemaphoreTake(coreMutex, pdMS_TO_TICKS(1500)) != pdTRUE'), 'Generated sketch must use 1500ms timeout for OTA upload mutex');
 const setupBody = enode1Source1.slice(enode1Source1.indexOf('void setup()'));
 const radioIdx = setupBody.indexOf('beginRadioAndLoRaWAN();');
 const sensorIdx = setupBody.indexOf('initApplicationSensors();');

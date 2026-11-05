@@ -38,7 +38,75 @@ from payload_codec import (
     LEGACY_FIXED6_FPORT, WIRE_TYPES, build_codec_fields, decode_application_payload,
 )
 
-VERSION = "2.7.0-emf1-single-sketch"
+import payload_codec
+import vision_engine
+import vision_hub
+
+VISION_LOCK = threading.Lock()
+VISION_RECONSTRUCTOR = vision_hub.FrameReconstructor()
+VISION_DETECTOR = vision_hub.RuleBasedSmokeDetector()
+_blank_grid = vision_engine._make_grid(100.0)
+VISION_RECONSTRUCTOR.load_keyframe(_blank_grid, keyframe_gen_id=1)
+
+
+def handle_vision_status() -> dict:
+    with VISION_LOCK:
+        recon = VISION_RECONSTRUCTOR
+        inference = VISION_DETECTOR.evaluate_frame(recon)
+        return {
+            "keyframe_gen_id": recon.keyframe_gen_id,
+            "frame_seq": getattr(recon, "last_applied_frame_seq", 0),
+            "completeness_pct": recon.last_completeness_pct,
+            "stale_cell_count": len(recon.stale_cell_mask),
+            "inference": inference,
+            "cutoff_profiles": dict(payload_codec.CUTOFF_PROFILES),
+        }
+
+
+def handle_vision_simulate(req: dict) -> dict:
+    scenario = req.get("scenario", "emerging_smoke_plume")
+    profile = req.get("profile", "balanced")
+    report = vision_engine.run_scenario_benchmark(profile=profile)
+    sc = report["scenarios"].get(scenario, {})
+    with VISION_LOCK:
+        gen_id = VISION_RECONSTRUCTOR.keyframe_gen_id or 1
+        base = vision_engine._make_grid(100.0)
+        eng = vision_engine.VisualDifferenceEngine(base, keyframe_gen_id=gen_id, t_noise=8.0)
+        smoke_frame = vision_engine._make_grid(100.0)
+        smoke_cells = {100, 101, 132, 133}
+        for s_idx in smoke_cells:
+            smoke_frame[s_idx]["luma"] = 150.0
+            smoke_frame[s_idx]["spatial_variance"] = 28.0
+            smoke_frame[s_idx]["gradient_8x8"] = [140 + (i % 8) * 5 for i in range(16)]
+        res = eng.process_frame(smoke_frame, frame_seq=1, profile=profile)
+        for pkt in res["packets"]:
+            VISION_RECONSTRUCTOR.ingest_delta_packet(pkt)
+        inference = VISION_DETECTOR.evaluate_frame(VISION_RECONSTRUCTOR)
+        return {
+            "scenario": scenario,
+            "profile": profile,
+            "packets_sent": sc.get("packets_sent", len(res["packets"])),
+            "frozen_e_ref_cells": sc.get("frozen_e_ref_cells", res.get("frozen_cells_count", 0)),
+            "inference": inference,
+            "keyframe_gen_id": gen_id,
+            "total_airtime_ms": sc.get("total_airtime_ms", 0.0),
+            "total_phy_bytes": sc.get("total_phy_bytes", 0),
+        }
+
+
+def handle_vision_ingest_delta(req: dict) -> dict:
+    hex_str = str(req.get("hex", "")).strip()
+    if not hex_str:
+        return {"status": "error", "reason": "Missing hex"}
+    try:
+        raw_pkt = bytes.fromhex(hex_str)
+    except ValueError:
+        return {"status": "error", "reason": "Invalid hex encoding"}
+    with VISION_LOCK:
+        return VISION_RECONSTRUCTOR.ingest_delta_packet(raw_pkt)
+
+
+VERSION = "3.0.0"
 HOST = os.environ.get("DASH_HOST", "0.0.0.0")
 PORT = int(os.environ.get("DASH_PORT", "8026"))
 COMPILER_BRIDGE_URL = os.environ.get("COMPILER_BRIDGE_URL", "http://100.93.135.116:8027/api/compile")
@@ -1463,8 +1531,11 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, {"required": bool(AUTH_PASSWORD), "authenticated": self.auth_ok(),
                                  "username": AUTH_USERNAME if self.auth_ok() else None})
             return
-        if (path.startswith("/api/") and path not in ("/api/auth",) or path == "/clear") and not self.auth_ok():
+        if (path.startswith("/api/") and path not in ("/api/auth", "/api/vision/status") or path == "/clear") and not self.auth_ok():
             self.auth_required_response()
+            return
+        if path == "/api/vision/status":
+            self.send_json(200, handle_vision_status())
             return
         if path == "/api/state":
             gw_radio = get_cached_gateway_radio()
@@ -1609,8 +1680,26 @@ class Handler(BaseHTTPRequestHandler):
 
         # ChirpStack HTTP webhook ingestion (POST /?event=up) deliberately stays public;
         # Compilation proxy also stays accessible without auth so nodes can be updated.
-        if parsed.path.startswith("/api/") and parsed.path != "/api/compile" and not self.auth_ok():
+        if parsed.path.startswith("/api/") and parsed.path not in ("/api/compile", "/api/vision/simulate", "/api/vision/delta") and not self.auth_ok():
             self.auth_required_response()
+            return
+
+        if parsed.path == "/api/vision/simulate":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                req_data = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                req_data = {}
+            self.send_json(200, handle_vision_simulate(req_data))
+            return
+
+        if parsed.path == "/api/vision/delta":
+            try:
+                length = int(self.headers.get("Content-Length", "0"))
+                req_data = json.loads(self.rfile.read(length).decode("utf-8")) if length else {}
+            except Exception:
+                req_data = {}
+            self.send_json(200, handle_vision_ingest_delta(req_data))
             return
 
         if parsed.path == "/api/configs":

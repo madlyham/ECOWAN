@@ -6,6 +6,8 @@
 - **ChirpStack Token Invalidation (Fix #3):** Auto-invalidates stale cached tokens on HTTP 401 Unauthorized in `edge_dash.py` and retries once with a fresh token.
 - **Compiler Bridge Stale Binary Unlink (Fix #4):** Ensures existing `.bin` files are deleted before `arduino-cli compile` runs in `compile_bridge.py`.
 - **DOM XSS Sanitization (Fix #5):** Added `cfgEscapeHtml()` in `index.html` to sanitize SSID and password in review cards, with test coverage in `test_codegen.js`.
+- **EMF1 Payload Codec Consolidation (Fix #6):** Consolidated `payload_codec.py` into `gateway_hub/` with `EMF1_REGISTRY` export, enabling standalone `edge_dash.py` imports and passing all 18 codec unit tests.
+- **OTA Upload Mutex Timeout (Fix #7):** Added 1500ms timeout (`pdMS_TO_TICKS(1500)`) for `coreMutex` in `otaUploadStream()` across `ECOWAN_NodeCore_Template.ino`, `ENODE1.ino`, `ENODE2.ino`, and `index.html` codegen to eliminate instant 400 rejection during radio activity.
 
 ## v2.8 — EGM Architecture Contracts & Reference Sketch Synchronization
 - Bootstrapped hierarchical Elephant-Goldfish Model (EGM) documentation contracts across Root `README.md` (Blueprint/Hay), `gateway_hub/README.md`, `ENODE1/README.md`, and `ENODE2/README.md`.

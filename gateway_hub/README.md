@@ -1,7 +1,7 @@
 # ECOWAN Gateway & Server Hub (`gateway_hub`)
 
 ## Overview
-The `gateway_hub` directory is the unified operational hub for all gateway-side services, build-server integrations, modular sensor definitions, and browser-based firmware generation within the ECOWAN platform. It hosts the Edge Monitor web dashboard (`edge_dash.py` + `index.html`), the remote Arduino build server compiler bridge (`compile_bridge.py`), the hardware sensor definitions (`parts_catalog.json`), the stationary core contracts (`CODEGEN_CORE_CONTRACT.json`, `ECOWAN_NodeCore_Template.ino`), and the automated validation test suite (`test_codegen.js`).
+The `gateway_hub` directory is the unified operational hub for all gateway-side services, build-server integrations, modular sensor definitions, and browser-based firmware generation within the ECOWAN platform. It hosts the Edge Monitor web dashboard (`edge_dash.py` + `index.html`), the remote Arduino build server compiler bridge (`compile_bridge.py`), the hardware sensor definitions (`parts_catalog.json`), the EMF1 wire codec engine (`payload_codec.py`), the stationary core contracts (`CODEGEN_CORE_CONTRACT.json`, `ECOWAN_NodeCore_Template.ino`), and the automated validation test suites (`test_codegen.js`, `test_payload_codec.py`).
 
 ## Interface
 - **HTTP Backend Service (`edge_dash.py` on Dragino port 8026 / 8443):**

@@ -29,6 +29,12 @@ edge_monitor_state.json
 *.pdf
 AGENTS.md
 
+# Scratch test directories
+adfasfasdf/
+ENode1m/
+patch_*.py
+*.tmp
+
 # OS / Editor files
 .DS_Store
 Thumbs.db

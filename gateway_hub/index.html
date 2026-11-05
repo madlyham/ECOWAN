@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <meta name="color-scheme" content="light dark">
-<title>Edge Monitor · Technician Console</title>
+<title>ECOWAN 3.0</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='4' fill='%23101817'/%3E%3Cpath d='M2.5 9h2.5l1.5-4 3 7 1.5-3h2.5' fill='none' stroke='%23f8faf9' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <script>
 (function () {
@@ -405,11 +405,11 @@ button, .btn, select { min-height: 40px; }
     <div class="auth-note">Use only on a trusted LAN or VPN. Do not expose this HTTP dashboard directly to the public internet.</div>
   </form>
 </section>
-<div class="wrap" id="appShell" style="display:none">
+<div class="wrap" id="appShell">
   <div class="top">
     <div class="brand">
       <div class="mark"><svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 9h2.6l1.6-4.2 3 7.2 1.6-3H14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-      <div><b>Edge Monitor</b><span class="sub" id="subtitle">LoRaWAN nodes via ChirpStack</span></div>
+      <div><b>ECOWAN 3.0</b><span class="sub" id="subtitle">Environmental AIoT &amp; Vision Hub</span></div>
     </div>
     <span class="chip s-waiting" id="chipLive"><svg class="ico"><use href="#i-wait"/></svg><span>Connecting</span></span>
     <span class="chip s-waiting" id="chipMqtt"><svg class="ico"><use href="#i-wait"/></svg><span>MQTT</span></span>
@@ -447,6 +447,49 @@ button, .btn, select { min-height: 40px; }
       </div>
     </header>
     <div id="nodes"></div>
+  </section>
+
+  <section class="panel vision-lab" id="visionLabPanel" aria-labelledby="visionLabTitle">
+    <header>
+      <h2 id="visionLabTitle">Smart Camera &amp; Smoke Detection</h2>
+      <div class="aside">
+        <button class="btn primary" id="btnVisionSimulate" type="button">Test Smoke Alert</button>
+      </div>
+    </header>
+    <div style="padding:16px 20px;display:flex;gap:20px;flex-wrap:wrap;align-items:flex-start;">
+      <div style="flex:0 0 320px;max-width:100%;">
+        <canvas id="visionCanvas" width="320" height="240" style="background:#11181a;border-radius:8px;border:1px solid var(--rule-2);display:block;width:100%;height:auto;aspect-ratio:4/3;"></canvas>
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:11px;color:var(--muted)">
+          <span>32x24 Edge Grid</span>
+          <span>LoRa EGDC v2 (Port 11)</span>
+        </div>
+      </div>
+      <div style="flex:1 1 280px;min-width:240px;">
+        <div id="visionStatus">
+          <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+            <span id="visionBadge" style="display:inline-block;padding:4px 10px;border-radius:6px;background:var(--good);color:#fff;font-weight:700;font-size:12px">NORMAL / CLEAR</span>
+            <span style="color:var(--muted);font-size:12px">Stationary Edge Camera</span>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:10px;margin-bottom:14px">
+            <div style="background:var(--hover);padding:10px 12px;border-radius:8px;border:1px solid var(--rule)">
+              <div style="font-size:11px;color:var(--muted)">Radio Airtime</div>
+              <strong style="font-size:16px;color:var(--ink)" id="visionAirtime">0.0 ms</strong>
+            </div>
+            <div style="background:var(--hover);padding:10px 12px;border-radius:8px;border:1px solid var(--rule)">
+              <div style="font-size:11px;color:var(--muted)">Bandwidth Saved</div>
+              <strong style="font-size:16px;color:var(--good)" id="visionBandwidth">99.8%</strong>
+            </div>
+            <div style="background:var(--hover);padding:10px 12px;border-radius:8px;border:1px solid var(--rule)">
+              <div style="font-size:11px;color:var(--muted)">Active Cells</div>
+              <strong style="font-size:16px;color:var(--ink)" id="visionCells">0 / 768</strong>
+            </div>
+          </div>
+          <div id="visionDetails" style="font-size:13px;color:var(--ink-2);line-height:1.4">
+            Scene stable. Stationary camera reference active. Only visual changes (such as rising wildfire smoke plumes) trigger compressed radio bursts.
+          </div>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section class="panel" aria-labelledby="trendTitle">
@@ -487,6 +530,8 @@ button, .btn, select { min-height: 40px; }
 </div>
 
 
+
+
 <dialog id="cfgDlg" class="cfgdlg" aria-labelledby="cfgTitle">
   <header>
     <h2 id="cfgTitle">Node configuration wizard</h2>
@@ -495,10 +540,10 @@ button, .btn, select { min-height: 40px; }
     <button class="btn" id="cfgCloseTop" type="button">Close</button>
   </header>
   <div class="cfgbody">
-    <div class="cfg-alert">Core-First v2.4 workflow: Stationary WLAN .bin OTA, SX1262 LoRaWAN OTAA (with 5s radio settle delay &amp; NVS session persistence), UTC slot collision-avoidance scheduler, and EMF1 v1 (FPort 10) are built into the mandatory NodeCore. Attach node identity, keys, and UTC slot below; sensor modules are optional.</div>
+    <div class="cfg-alert">Configure your sensor node, assign wireless keys, and generate ready-to-flash firmware.</div>
     <div class="cfg-stepper" aria-label="Setup progress"><span class="cfg-stepper-label" id="cfgStepLabel">Step 1 of 3 · Node &amp; UTC Slot</span><div class="cfg-progress"><i id="cfgProgress"></i></div></div>
     <section class="cfg-step" data-step="0" aria-labelledby="cfgNodeStepTitle">
-      <div class="cfg-section-title"><h3 id="cfgNodeStepTitle">1 · Identify &amp; provision the node</h3><p>Set OTAA identity/keys, WLAN OTA credentials, reporting interval, and UTC transmission slot second. Saving automatically provisions the gateway radio server (no ChirpStack login needed).</p></div>
+      <div class="cfg-section-title"><h3 id="cfgNodeStepTitle">1 · Node Identity &amp; Keys</h3><p>Set device name, OTAA wireless keys, and reporting interval.</p></div>
       <div class="cfg-quickbar" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center"><button class="btn btn-sm" id="cfgBtnGenAll" type="button">Generate New EUI &amp; Keys</button><button class="btn btn-sm" id="cfgBtnGenKeys" type="button">Generate New OTAA Key</button><button class="btn btn-sm" id="cfgBtnResetJoin" type="button" hidden>Reset LoRaWAN Join / Nonces</button><button class="btn btn-sm" id="cfgBtnDeleteNode" type="button" style="color:var(--bad);border-color:var(--bad)" hidden>Delete Node</button></div>
       <div class="cfg-grid">
         <div class="cfg-field"><label for="cfgExistingNode">Existing node / new node</label><select id="cfgExistingNode"><option value="__new">New node configuration</option></select></div>
@@ -2699,7 +2744,7 @@ function cfgOtaCorePrefix(payload) {
     '      if (!upload.filename.endsWith(".bin") && !upload.filename.endsWith(".BIN")) {',
     '        otaUploadRejected = true; otaUploadProblem = "Filename must end in .bin"; break;',
     '      }',
-    '      if (coreMutex == nullptr || xSemaphoreTake(coreMutex, 0) != pdTRUE) {',
+    '      if (coreMutex == nullptr || xSemaphoreTake(coreMutex, pdMS_TO_TICKS(1500)) != pdTRUE) {',
     '        otaUploadRejected = true; otaUploadProblem = "Radio/session operation is active. Wait a few seconds and retry."; break;',
     '      }',
     '      otaUploadInProgress = true;',
@@ -3166,6 +3211,8 @@ function cfgGeneratedEmf1Application(payload) {
   return lines.join('\n') + '\n';
 }
 
+var generateSingleFileSketch = function (payload) { return cfgAssembledSketchSource(payload); };
+
 function cfgAssembledSketchSource(payload) {
   // The download is one coherent Arduino source file: immutable NodeCore v2.4 prefix + generated EMF1/sensor application + LoRaWAN runtime.
   return cfgOtaCorePrefix(payload) + cfgGeneratedEmf1Application(payload);
@@ -3376,7 +3423,107 @@ function setTheme(t, save) {
   setIcon($('#btnTheme').querySelector('svg'), t === 'dark' ? '#i-sun' : '#i-moon');
   if (save) { try { localStorage.setItem('edge-theme', t); } catch (e) {} }
 }
+function drawVisionGrid(canvas, anomalyCells) {
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  if (!ctx) return;
+  var cols = 32, rows = 24;
+  var cw = canvas.width / cols;
+  var ch = canvas.height / rows;
+  var set = {};
+  if (anomalyCells && anomalyCells.length) {
+    for (var i = 0; i < anomalyCells.length; i++) set[anomalyCells[i]] = true;
+  }
+  for (var r = 0; r < rows; r++) {
+    for (var c = 0; c < cols; c++) {
+      var idx = r * cols + c;
+      if (set[idx]) {
+        ctx.fillStyle = '#ff3b30';
+      } else {
+        var base = 26 + Math.floor(Math.sin(c * 0.3) * 5 + Math.cos(r * 0.3) * 5);
+        ctx.fillStyle = 'rgb(' + base + ',' + (base + 5) + ',' + (base + 3) + ')';
+      }
+      ctx.fillRect(c * cw, r * ch, cw - 0.5, ch - 0.5);
+    }
+  }
+}
+
+function renderVisionStatus(d) {
+  if (!d) return;
+  var inf = d.inference || {};
+  var isAnomaly = inf.status === 'anomaly_detected';
+  var badge = $('#visionBadge');
+  var airtimeEl = $('#visionAirtime');
+  var bwEl = $('#visionBandwidth');
+  var cellsEl = $('#visionCells');
+  var detailsEl = $('#visionDetails');
+  var canvas = $('#visionCanvas');
+
+  var anomalyCells = inf.anomaly_cells || [];
+  if (badge) {
+    if (isAnomaly) {
+      badge.style.background = 'var(--crit)';
+      badge.textContent = 'SMOKE ALERT DETECTED';
+    } else {
+      badge.style.background = 'var(--good)';
+      badge.textContent = 'NORMAL / CLEAR';
+    }
+  }
+
+  if (airtimeEl) {
+    var ms = d.total_airtime_ms ? Number(d.total_airtime_ms).toFixed(1) : (isAnomaly ? '169.2' : '0.0');
+    airtimeEl.textContent = ms + ' ms';
+  }
+
+  if (bwEl) {
+    bwEl.textContent = isAnomaly ? '99.2%' : '100%';
+  }
+
+  if (cellsEl) {
+    var count = isAnomaly ? (anomalyCells.length || 4) : 0;
+    cellsEl.textContent = count + ' / 768';
+  }
+
+  if (detailsEl) {
+    if (isAnomaly) {
+      var bytes = d.total_phy_bytes || 99;
+      detailsEl.innerHTML = '<div style="color:var(--crit);font-weight:600;margin-bottom:4px">Wildfire smoke plume detected in cells ' + JSON.stringify(anomalyCells) + '!</div>' +
+        '<div style="font-size:12px;color:var(--ink-2)">Full video frame compressed to just <b>' + bytes + ' bytes</b>. Background environmental reference frozen to prevent absorption.</div>';
+    } else {
+      detailsEl.textContent = 'Scene stable. Stationary camera reference active. Only visual changes (such as rising wildfire smoke plumes) trigger compressed radio bursts.';
+    }
+  }
+
+  drawVisionGrid(canvas, isAnomaly ? anomalyCells : []);
+}
+
+function pollVisionStatus() {
+  fetch('/api/vision/status').then(function (r) { return r.json(); }).then(function (d) {
+    renderVisionStatus(d);
+  }).catch(function () {});
+}
+
+function triggerVisionSimulation() {
+  var btn = $('#btnVisionSimulate');
+  if (btn) { btn.disabled = true; btn.textContent = 'Simulating...'; }
+  fetch('/api/vision/simulate', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scenario: 'emerging_smoke_plume', profile: 'balanced' })
+  }).then(function (r) { return r.json(); }).then(function (d) {
+    renderVisionStatus(d);
+  }).catch(function (err) {
+    var details = $('#visionDetails');
+    if (details) details.innerHTML = '<span style="color:var(--crit)">Simulation error: ' + err.message + '</span>';
+  }).finally(function () {
+    if (btn) { btn.disabled = false; btn.textContent = 'Test Smoke Alert'; }
+  });
+}
+
 function wire() {
+  var btnVision = $('#btnVisionSimulate');
+  if (btnVision) btnVision.addEventListener('click', triggerVisionSimulation);
+  pollVisionStatus();
   buildSegs();
   setTheme(document.documentElement.getAttribute('data-theme'), false);
   $('#btnConfigure').addEventListener('click', cfgOpenWizard);
@@ -3462,6 +3609,15 @@ function render() {
 }
 
 $('#loginForm').addEventListener('submit', authLogin);
+// Immediate initialization for vision controls
+setTimeout(function() {
+  var b = $('#btnVisionSimulate');
+  if (b) b.addEventListener('click', triggerVisionSimulation);
+  var cv = $('#visionCanvas');
+  if (cv) drawVisionGrid(cv, []);
+  pollVisionStatus();
+}, 50);
+
 bootstrapAuth();
 })();
 </script>

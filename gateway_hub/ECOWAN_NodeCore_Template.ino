@@ -129,7 +129,7 @@ static void otaUploadStream() {
       if (!upload.filename.endsWith(".bin") && !upload.filename.endsWith(".BIN")) {
         otaUploadRejected = true; otaUploadProblem = "Filename must end in .bin"; break;
       }
-      if (coreMutex == nullptr || xSemaphoreTake(coreMutex, 0) != pdTRUE) {
+      if (coreMutex == nullptr || xSemaphoreTake(coreMutex, pdMS_TO_TICKS(1500)) != pdTRUE) {
         otaUploadRejected = true; otaUploadProblem = "Radio/session operation is active. Wait a few seconds and retry."; break;
       }
       otaUploadInProgress = true;

@@ -5,6 +5,23 @@ ECOWAN is a modular environmental-monitoring AIoT platform engineered for high r
 
 The system enforces strict determinism across wireless transmissions via a UTC second-slot scheduler (`DeviceTimeReq`/`DeviceTimeAns`), dual-layer ESP32 OTA firmware rollback fail-safes, and standard Edge Measurement Format v1 (`EMF1`) frames on LoRaWAN FPort 10.
 
+## Running Architecture & Infrastructure (Outside Laptop)
+- **Dragino Gateway (`dragino`)**:
+  - **Hardware & Hostname**: Dragino LPS8v2 (`dragino-257d3b`).
+  - **Tailscale IP**: `100.83.203.103`.
+  - **SSH / File Transfer**: Dropbear SSH (`ssh root@100.83.203.103`). File transfers require the legacy SCP flag (`scp -O`).
+  - **Running Services**:
+    - ChirpStack v4 LoRaWAN Network Server (REST API on port `8090`).
+    - Mosquitto MQTT Broker (`127.0.0.1:1883`, topics `application/+/device/+/event/+`).
+    - Edge Monitor service (`edge-monitor.service`, Python HTTP daemon on port `8026` / HTTPS `8443` serving `/root/index.html` and `/root/edge_dash.py`).
+- **Remote Compiler Server (`lacave`)**:
+  - **Host & Tailscale IP**: `lacave` (`100.93.135.116`).
+  - **SSH / Service**: Runs `compile_bridge.py` on port `8027` as a systemd service.
+  - **Compilation Engine**: Invokes `arduino-cli` with canonical persistent cache (`/var/cache/ecowan_canonical`), yielding warm build times of ~10–15 seconds.
+- **Git Branching Strategy**:
+  - `main`: Canonical, production-verified stable baseline.
+  - `develop`: Active feature development branch (all changes, tests, and EGM reviews occur here before PR/merge to main).
+
 ## Local Interface & Invariants
 - `credentials.h.example`: Baseline configuration template defining standard OTAA credential keys (`DEV_EUI`, `JOIN_EUI`, `NWK_KEY`, `APP_KEY`), default Wi-Fi SoftAP passwords, and server endpoints. Real credentials must reside in `credentials.h` (git-ignored) and never be committed to source control.
 
