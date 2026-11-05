@@ -95,6 +95,16 @@ def handle_vision_simulate(req: dict) -> dict:
 
 
 def handle_vision_ingest_delta(req: dict) -> dict:
+    if "packets" in req and isinstance(req["packets"], list) and req["packets"]:
+        last_res = {"status": "ok", "ingested": len(req["packets"])}
+        with VISION_LOCK:
+            for p_hex in req["packets"]:
+                try:
+                    raw_pkt = bytes.fromhex(p_hex)
+                    last_res = VISION_RECONSTRUCTOR.ingest_delta_packet(raw_pkt)
+                except Exception as e:
+                    last_res = {"status": "error", "reason": str(e)}
+        return last_res
     hex_str = str(req.get("hex", "")).strip()
     if not hex_str:
         return {"status": "error", "reason": "Missing hex"}

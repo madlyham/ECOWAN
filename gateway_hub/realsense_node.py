@@ -240,6 +240,7 @@ class RealSenseNode:
         payload = {
             "keyframe_gen_id": self.keyframe_gen_id,
             "frame_seq": self.frame_seq,
+            "hex": packets[0].hex() if packets else "",
             "packets": [p.hex() for p in packets],
             "timestamp": time.time(),
             "backend": self.backend
