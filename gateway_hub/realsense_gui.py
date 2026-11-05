@@ -1,6 +1,6 @@
 """ECOWAN 3.0 - Desktop RealSense & Edge Camera Viewer GUI.
 
-A responsive desktop GUI for Windows/Linux to view what the RealSense / USB camera sees,
+A smooth, responsive desktop GUI for Windows/Linux to view what the RealSense / USB camera sees,
 display the real-time 32x24 environmental difference grid, and transmit EGDC v2 packets
 to the Dragino Gateway dashboard.
 """
@@ -24,7 +24,7 @@ from vision_engine import VisualDifferenceEngine
 
 
 class CameraCaptureThread(threading.Thread):
-    """Background thread that continuously polls frames from the camera to prevent GUI freezing."""
+    """Background thread that continuously grabs frames using DirectShow to prevent UI freezing."""
 
     def __init__(self, device_idx=2):
         super().__init__(daemon=True)
@@ -33,18 +33,29 @@ class CameraCaptureThread(threading.Thread):
         self.is_running = True
         self.lock = threading.Lock()
         self.latest_frame = None
-        self.status_msg = "Initializing..."
+        self.status_msg = "Connecting to camera..."
         self.error_count = 0
 
     def run(self):
+        # Prefer DirectShow on Windows for multi-stream RealSense devices
         try:
-            self.cap = cv2.VideoCapture(self.device_idx)
+            self.cap = cv2.VideoCapture(self.device_idx, cv2.CAP_DSHOW)
             if not self.cap.isOpened():
-                self.status_msg = f"Camera {self.device_idx} could not be opened."
-            else:
-                self.status_msg = f"Camera {self.device_idx} streaming active."
+                # Fallback to default
+                self.cap = cv2.VideoCapture(self.device_idx)
         except Exception as e:
-            self.status_msg = f"Camera error: {e}"
+            self.status_msg = f"Camera open error: {e}"
+            return
+
+        if self.cap and self.cap.isOpened():
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+            self.status_msg = f"Camera {self.device_idx} active (640x480 RGB)."
+        else:
+            if self.device_idx == 1:
+                self.status_msg = "Cam 1 is the 16-bit Depth sensor. Select Cam 2 for RealSense RGB."
+            else:
+                self.status_msg = f"Camera {self.device_idx} could not be opened."
 
         while self.is_running:
             if self.cap and self.cap.isOpened():
@@ -57,8 +68,11 @@ class CameraCaptureThread(threading.Thread):
                 else:
                     self.error_count += 1
                     if self.error_count > 10:
-                        self.status_msg = f"Cam {self.device_idx}: Frame grab failed (IR/Depth or offline)."
-                    time.sleep(0.05)
+                        if self.device_idx == 1:
+                            self.status_msg = "Cam 1 is Depth-only. Please select Cam 2 (RealSense RGB)."
+                        else:
+                            self.status_msg = f"Cam {self.device_idx} frame grab paused."
+                    time.sleep(0.04)
             else:
                 time.sleep(0.1)
             time.sleep(0.015) # ~60Hz poll
@@ -84,10 +98,10 @@ class RealSenseViewerApp:
         self.root = root
         self.root.title("ECOWAN 3.0 — RealSense Camera & Depth Monitor")
         self.root.geometry("1060x700")
-        self.root.minsize(900, 600)
+        self.root.minsize(920, 620)
         self.root.configure(bg="#0a0f10")
 
-        # State
+        # State: Default to Camera 2 (Intel RealSense RGB)
         self.active_camera_idx = 2
         self.cam_thread = None
         self.fps_counter = 0
@@ -121,8 +135,8 @@ class RealSenseViewerApp:
         tk.Label(top_bar, text="Camera:", font=("Segoe UI", 10), fg="#b3c0be", bg="#11181a").pack(side=tk.LEFT, padx=(10, 4))
         self.cam_combo = ttk.Combobox(
             top_bar,
-            values=["Cam 2 (RealSense RGB)", "Cam 0 (Webcam / Alt)", "Cam 1 (IR/Depth Stream)"],
-            width=26,
+            values=["Cam 2 (RealSense D435 RGB)", "Cam 0 (ASUS Laptop Webcam)", "Cam 1 (D435 Raw Depth)"],
+            width=28,
             state="readonly"
         )
         self.cam_combo.current(0)
@@ -206,10 +220,13 @@ class RealSenseViewerApp:
         sel = self.cam_combo.get()
         if "Cam 2" in sel:
             idx = 2
+            self.lbl_cam_title.config(text="Live Camera Feed (Intel RealSense RGB)")
         elif "Cam 0" in sel:
             idx = 0
+            self.lbl_cam_title.config(text="Live Camera Feed (ASUS Laptop Webcam)")
         else:
             idx = 1
+            self.lbl_cam_title.config(text="Intel RealSense Depth Sensor (Depth/IR)")
         self._start_camera_stream(idx)
 
     def _start_camera_stream(self, idx):
@@ -274,8 +291,8 @@ class RealSenseViewerApp:
         if frame is None:
             # Standby screen when waiting or switching
             status_txt = self.cam_thread.status_msg if self.cam_thread else "Connecting..."
-            frame = np.full((240, 320, 3), 30, dtype=np.uint8)
-            cv2.putText(frame, status_txt, (15, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (180, 180, 180), 1)
+            frame = np.full((240, 320, 3), 25, dtype=np.uint8)
+            cv2.putText(frame, status_txt, (15, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (180, 180, 180), 1)
 
         # FPS calculation
         self.fps_counter += 1
@@ -322,7 +339,7 @@ class RealSenseViewerApp:
             self._send_now()
 
         # Render Left: Live Camera Canvas
-        cam_display = cv2.resize(frame, (440, 330))
+        cam_display = cv2.resize(frame, (460, 345))
         img_cam = Image.fromarray(cam_display)
         self.photo_cam = ImageTk.PhotoImage(image=img_cam)
         self.canvas_cam.create_image(0, 0, image=self.photo_cam, anchor=tk.NW)
@@ -336,7 +353,7 @@ class RealSenseViewerApp:
                 if r_idx < 24 and c_idx < 32:
                     grid_arr[r_idx, c_idx] = [255, 50, 50]
 
-        grid_display = cv2.resize(grid_arr, (440, 330), interpolation=cv2.INTER_NEAREST)
+        grid_display = cv2.resize(grid_arr, (460, 345), interpolation=cv2.INTER_NEAREST)
         img_grid = Image.fromarray(grid_display)
         self.photo_grid = ImageTk.PhotoImage(image=img_grid)
         self.canvas_grid.create_image(0, 0, image=self.photo_grid, anchor=tk.NW)
